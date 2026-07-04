@@ -218,6 +218,23 @@ prediction rolls to the next stage. Stage syntax is `[PROBE:]TEMP[:LABEL]` (e.g.
 `history.py` reuse the plan automatically (saved to a gitignored `.cook_plan.json`;
 `--no-plan` to skip). `history.py show` reports when each stage was reached.
 
+### Name your probes
+
+Nobody thinks in probe numbers — you know it's the pork butt, not "probe 1". Give
+each probe a name and both `--speak` announcements and alarm messages use it:
+
+```bash
+./venv/bin/python poll.py --watch 30 --speak --probe-name "pork butt" --stage 165:wrap --stage 203:done
+```
+
+```text
+🔊 Update 4. the pork butt is at 160 degrees, heading to wrap at 165 -- ...
+```
+
+Syntax is `[PROBE:]NAME` (bare name → probe 1, e.g. `--probe-name 2:brisket` for
+probe 2). Set once and it's remembered across `--watch` runs (saved to a gitignored
+`.probe_names.json`).
+
 ---
 
 ## 🔐 Credentials

@@ -29,6 +29,7 @@ import history  # noqa: E402
 import plan  # noqa: E402
 import plot  # noqa: E402
 import poll  # noqa: E402,F401
+import probe_names  # noqa: E402
 import traeger_client as tc  # noqa: E402
 import trend  # noqa: E402,F401
 
@@ -719,11 +720,86 @@ def test_speech_commentary_deterministic_not_random():
     # a live cook. Same inputs -> same output, and cycling through `n` visits
     # more than one variant.
     now = dt.datetime(2026, 7, 4, 12, 0, 0)
-    a = poll._speech_commentary(1, 3, "steady", "on_track", 1.2, 20.0, 180, now)
-    b = poll._speech_commentary(1, 3, "steady", "on_track", 1.2, 20.0, 180, now)
+    a = poll._speech_commentary(1, "probe 1", 3, "steady", "on_track", 1.2, 20.0, 180, now)
+    b = poll._speech_commentary(1, "probe 1", 3, "steady", "on_track", 1.2, 20.0, 180, now)
     assert a == b, (a, b)
-    variants = {poll._speech_commentary(1, k, "steady", "on_track", 1.2, 20.0, 180, now) for k in range(6)}
+    variants = {poll._speech_commentary(1, "probe 1", k, "steady", "on_track", 1.2, 20.0, 180, now)
+                for k in range(6)}
     assert len(variants) >= 2, variants
+
+
+def test_probe_names_parse_and_build():
+    assert probe_names.parse_name("pork butt") == (1, "pork butt")
+    assert probe_names.parse_name("2:brisket") == (2, "brisket")
+    assert probe_names.parse_name("  ") is None
+    assert probe_names.parse_name("x:name") is None  # non-numeric probe -> ignored
+
+    names = probe_names.build_names(["pork butt", "2:brisket", ""])
+    assert names == {1: "pork butt", 2: "brisket"}, names
+
+
+def test_probe_names_label_fallback():
+    assert probe_names.label(1, None) == "probe 1"
+    assert probe_names.label(1, {}) == "probe 1"
+    assert probe_names.label(1, {1: "pork butt"}) == "the pork butt"
+    assert probe_names.label(2, {1: "pork butt"}) == "probe 2"  # only probe 1 named
+
+
+def test_probe_names_persist_round_trip():
+    path = "/tmp/.pellet_pilot_test_probe_names.json"
+    try:
+        names = {1: "pork butt", 2: "brisket point"}
+        probe_names.save_names(names, path=path)
+        assert probe_names.load_names(path=path) == names
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_probe_names_size_cap():
+    # Mirrors plan.py's plan-file cap -- a malformed/huge config file should
+    # be refused outright, not handed to json.load.
+    path = "/tmp/.pellet_pilot_test_probe_names_huge.json"
+    try:
+        with open(path, "w") as f:
+            f.write("x" * (probe_names._MAX_NAMES_FILE_BYTES + 1))
+        try:
+            probe_names.load_names(path=path)
+            assert False, "expected ValueError for an oversized names file"
+        except ValueError:
+            pass
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_speech_for_probes_uses_probe_name():
+    # The whole point: spoken text should say what's actually on the probe,
+    # not a bare index nobody remembers.
+    poll._eta_samples.clear()
+    poll._last_state.clear()
+    row = {"ts": dt.datetime(2026, 7, 4, 12, 0).isoformat(),
+           "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
+    named = poll.speech_for_probes(row, {}, {1: "pork butt"})
+    assert "the pork butt" in named, named
+    assert "probe 1" not in named, named
+
+    unnamed = poll.speech_for_probes(row, {}, None)
+    assert "probe 1" in unnamed, unnamed
+
+
+def test_check_alarms_uses_probe_name():
+    fired = []
+    orig_notify, poll.notify = poll.notify, lambda title, msg: fired.append(msg)
+    orig_remote, poll.notify_remote = poll.notify_remote, lambda title, msg: None
+    poll._fired.clear()
+    try:
+        row = {"probe1_temp": 205}
+        poll.check_alarms(row, {1: [203]}, {1: "pork butt"})
+        assert len(fired) == 1, fired
+        assert fired[0].startswith("The pork butt reached"), fired[0]
+    finally:
+        poll.notify, poll.notify_remote = orig_notify, orig_remote
 
 
 def test_backoff_seconds():
