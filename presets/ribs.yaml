@@ -1,0 +1,5 @@
+name: Ribs
+stage_specs:
+  - "203:done"
+name_specs:
+  - "ribs"

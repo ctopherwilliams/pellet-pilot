@@ -1,0 +1,5 @@
+name: Chicken
+stage_specs:
+  - "165:done"
+name_specs:
+  - "chicken"

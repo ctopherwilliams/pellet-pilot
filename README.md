@@ -54,6 +54,25 @@ cp .env.example .env          # add your grill account email
   ⏱  P1 ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 ```
 
+### One command, with presets
+
+`pellet` wraps the scripts above behind one entry point, and `--preset` fills in
+`--stage`/`--probe-name` for a cut of meat so you don't retype them every cook:
+
+```bash
+./venv/bin/pip install -e .           # adds the `pellet` command (optional; scripts above still work standalone)
+pellet presets                        # brisket, pork-butt, ribs, chicken
+pellet watch --preset brisket --speak --chart
+pellet history show
+pellet trend
+```
+
+`pellet watch` is just `poll.py --watch 30` under the hood — every flag documented
+above (`--alarm`, `--stage`, `--probe-name`, `--speak`, `--chart`, ...) still works;
+`--preset` only pre-fills `--stage`/`--probe-name`, and an explicit flag you also
+pass takes precedence. Add your own preset by dropping a YAML file in `presets/`
+(see the shipped ones for the two-key `stage_specs`/`name_specs` shape).
+
 ---
 
 ## 💻 How to run it — Mac, Windows, or Claude Code
