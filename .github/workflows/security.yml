@@ -12,14 +12,17 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -27,8 +30,22 @@ jobs:
           pip install -r requirements.txt
           pip install pip-audit bandit
 
+      - name: Smoke test
+        # Exercises imports, status parsing, and paho MQTT client construction.
+        # Catches breaking dependency bumps that pip-audit/bandit can't see
+        # (they don't run the code). A bad major bump fails here, not at runtime.
+        run: python tests/smoke.py
+
       - name: Dependency audit (pip-audit)
         run: pip-audit -r requirements.txt
 
       - name: Static analysis (bandit)
         run: bandit -c bandit.yaml -r poll.py traeger_client.py trend.py -ll
+
+  # Stable check name for branch protection. Passes only if the whole matrix passed,
+  # so the required status check does not change when the matrix does.
+  audit:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All test-matrix jobs passed."

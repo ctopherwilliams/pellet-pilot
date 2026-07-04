@@ -136,15 +136,16 @@ class Traeger:
         got = threading.Event()
         result = {}
 
-        client = mqtt.Client(transport="websockets")
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport="websockets")
         client.tls_set_context(_mqtt_tls_context(parts.hostname or parts.netloc))
         client.ws_set_options(path=f"{parts.path}?{parts.query}", headers={"Host": parts.netloc})
 
-        def on_connect(c, u, flags, rc):
+        # paho-mqtt v2 callback signatures.
+        def on_connect(c, u, flags, reason_code, properties):
             for g in self.grills:
                 c.subscribe((f"prod/thing/update/{g['thingName']}", 1))
 
-        def on_subscribe(c, u, mid, qos):
+        def on_subscribe(c, u, mid, reason_codes, properties):
             for g in self.grills:
                 try:
                     self._refresh_command(g["thingName"])
