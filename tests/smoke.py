@@ -1143,6 +1143,23 @@ def test_migrate_log_schema_preserves_old_rows_and_adds_new_columns():
             os.remove(path)
 
 
+def test_github_workflows_are_valid_yaml():
+    # A broken workflow file fails silently (no CI run at all, or a run that
+    # never triggers) rather than raising anywhere obvious -- catch a syntax
+    # mistake here instead of discovering it only when a real PR/push doesn't
+    # get the CI run it was supposed to.
+    import yaml
+    workflows_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  ".github", "workflows")
+    files = [f for f in os.listdir(workflows_dir) if f.endswith((".yml", ".yaml"))]
+    assert files, "expected at least one workflow file"
+    for fname in files:
+        with open(os.path.join(workflows_dir, fname)) as f:
+            data = yaml.safe_load(f)
+        assert isinstance(data, dict), f"{fname}: not a YAML mapping"
+        assert data.get("jobs"), f"{fname}: no jobs defined"
+
+
 def test_backoff_seconds():
     # RT-4: exponential backoff, capped, so a persistent re-auth failure doesn't
     # hammer Cognito every `interval` seconds forever.
