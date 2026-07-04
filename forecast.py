@@ -31,6 +31,11 @@ def forecast(times_min, temps, target, window_min=DEFAULT_WINDOW_MIN):
     cur = float(v[-1])
     keep = t >= (t[-1] - window_min)
     tw, vw = (t[keep], v[keep]) if keep.sum() >= 2 else (t, v)
+    if tw.max() == tw.min():
+        # All samples in the window share one timestamp (e.g. two ticks landing
+        # in the same second) -- no elapsed time to fit a rate from; polyfit on
+        # a zero-variance x would hit a singular/non-converging least-squares.
+        return {"rate": None, "eta_min": None, "status": "insufficient", "current": cur}
     rate = float(np.polyfit(tw, vw, 1)[0])
     if not target or target <= 0:
         return {"rate": rate, "eta_min": None, "status": "no_target", "current": cur}

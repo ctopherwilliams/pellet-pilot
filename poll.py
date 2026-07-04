@@ -5,6 +5,7 @@ Poll the Traeger and append readings to cook_log.csv.
 Usage:
   ./venv/bin/python poll.py            # one reading, printed + logged
   ./venv/bin/python poll.py --watch 30 # log every 30s until Ctrl-C
+  ./venv/bin/python poll.py --watch 30 --speak  # + a spoken update every tick
 
 Credentials come from environment or a local .env file (see .env.example):
   TRAEGER_USERNAME, TRAEGER_PASSWORD
@@ -13,6 +14,7 @@ Credentials come from environment or a local .env file (see .env.example):
 import csv
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
 import time
@@ -20,11 +22,21 @@ import time
 import plan
 from alarms import notify_remote
 from forecast import describe, describe_stages, forecast, forecast_stages
-from traeger_client import Traeger, parse_status
+from traeger_client import Traeger, TraegerError, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BW_SESSION_FILE = os.path.join(HERE, ".bw_session")
+_MAX_BACKOFF_S = 600  # cap re-auth retry backoff at 10 minutes
+
+
+def _backoff_seconds(interval, consecutive_failures):
+    """Exponential backoff after repeated re-auth failures, capped at _MAX_BACKOFF_S.
+
+    Keeps a persistently-failing --watch loop from hammering Cognito with an
+    auth attempt every `interval` seconds indefinitely.
+    """
+    return min(interval * (2 ** consecutive_failures), _MAX_BACKOFF_S)
 
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
@@ -53,8 +65,18 @@ def decode_status(code, connected, grill_temp):
     return name
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _applescript_escape(text):
-    """Escape user-influenced strings before embedding in AppleScript."""
+    """Escape user-influenced strings before embedding in AppleScript.
+
+    Strips control characters (including newlines, which AppleScript string
+    literals can't contain) before escaping backslashes/quotes, so a crafted
+    stage label (--stage, PROBE_STAGES, .cook_plan.json) can't break out of
+    the quoted string or corrupt the script passed to osascript.
+    """
+    text = _CONTROL_CHARS.sub(" ", text).replace("\n", " ").replace("\r", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
@@ -72,6 +94,80 @@ def notify(title, message):
     except FileNotFoundError:
         pass
     print("\a", end="")  # terminal bell
+
+
+def speak(text):
+    """Best-effort spoken update via macOS `say` -- no banner, no bell.
+
+    Unlike notify(), this is meant to run every tick (not just on alarm/stage
+    crossings), so it's deliberately quieter: speech only. No-op elsewhere or
+    if `say` isn't installed.
+    """
+    clean = _CONTROL_CHARS.sub(" ", text).replace("\n", " ").replace("\r", " ")
+    try:
+        subprocess.run(["say", clean], capture_output=True)
+    except FileNotFoundError:
+        pass
+
+
+def _speech_eta(status, eta_min, now):
+    """Spoken ETA fragment appended after the target/stage phrase.
+
+    Mirrors the same recent-window, stall-aware forecast used for the printed
+    prediction (see print_forecasts/forecast) -- never invents an ETA through
+    a stall.
+    """
+    if status == "on_track" and eta_min is not None:
+        clock = ""
+        if now is not None:
+            clock = f", around {(now + dt.timedelta(minutes=eta_min)).strftime('%-I:%M %p')}"
+        return f", about {eta_min:.0f} minutes away{clock}"
+    if status == "stalled":
+        return ", but it's stalled, no estimate right now"
+    return ""
+
+
+def speech_for_probes(row, stages):
+    """Build a short spoken summary of every connected probe: temp, next
+    stage/target, and an ETA -- using the same live sample buffer and forecast
+    logic that drives the printed prediction (print_forecasts must have run
+    first this tick so _eta_samples is up to date; one_shot() guarantees that).
+    """
+    now = dt.datetime.fromisoformat(row["ts"])
+    parts = []
+    for i in range(1, MAX_PROBES + 1):
+        temp = row.get(f"probe{i}_temp")
+        if not row.get(f"probe{i}_connected") or temp is None:
+            continue
+        samples = _eta_samples.get(i, [])
+        if samples:
+            t0 = samples[0][0]
+            mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
+            temps = [v for _, v in samples]
+        else:
+            mins, temps = [], []
+        if stages.get(i):
+            nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
+            if not nxt:
+                parts.append(f"probe {i}, {int(temp)} degrees, all stages done")
+                continue
+            eta = ""
+            if len(temps) >= 2:
+                fcs = forecast_stages(mins, temps, stages[i])
+                if fcs["next"]:
+                    eta = _speech_eta(fcs["next"]["status"], fcs["next"]["eta_min"], now)
+            parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}{eta}")
+        else:
+            tgt = row.get(f"probe{i}_set")
+            if not tgt:
+                parts.append(f"probe {i}, {int(temp)} degrees")
+                continue
+            eta = ""
+            if len(temps) >= 2:
+                fc = forecast(mins, temps, float(tgt))
+                eta = _speech_eta(fc["status"], fc["eta_min"], now)
+            parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}{eta}")
+    return ". ".join(parts)
 
 
 def load_env():
@@ -125,9 +221,13 @@ def bitwarden_password(item):
     if not sess:
         return None
     try:
+        # Pass the session key via BW_SESSION (which `bw` reads automatically),
+        # not --session -- a CLI arg is visible to other local users/processes
+        # via `ps`/`/proc/<pid>/cmdline` for the life of the subprocess.
         out = subprocess.run(
-            ["bw", "get", "password", item, "--session", sess],
+            ["bw", "get", "password", item],
             capture_output=True, text=True,
+            env={**os.environ, "BW_SESSION": sess},
         )
     except FileNotFoundError:
         return None  # bw CLI not installed
@@ -235,7 +335,7 @@ def check_alarms(row, alarms):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None, stages=None):
+def one_shot(t, alarms=None, stages=None, speak_every_tick=False):
     alarms = alarms or {}
     stages = stages or {}
     status = t.poll()
@@ -257,6 +357,10 @@ def one_shot(t, alarms=None, stages=None):
         probes_txt = "  ".join(parts) if parts else "no probes"
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
+        if speak_every_tick:
+            text = speech_for_probes(row, stages)
+            if text:
+                speak(f"Update. {text}. Grill {int(row['grill'])} degrees.")
         if stages:
             check_stage_alarms(row, stages)
         # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
@@ -269,24 +373,61 @@ def one_shot(t, alarms=None, stages=None):
             check_alarms(row, active)
 
 
+def resolve_password(user):
+    """Resolve the Traeger password: env override, then Bitwarden, then Keychain.
+
+    Pops TRAEGER_PASSWORD out of the process environment as soon as it's read,
+    so it isn't inherited by every child subprocess spawned afterward (bw,
+    security, osascript, say) for the rest of the run. Returns (password, source)
+    or (None, None) if nothing is configured.
+    """
+    pw = os.environ.pop("TRAEGER_PASSWORD", None)
+    if pw:
+        return pw, "env"
+    pw = bitwarden_password(os.environ.get("TRAEGER_BW_ITEM"))
+    if pw:
+        return pw, "bitwarden"
+    pw = keychain_password(user)
+    if pw:
+        return pw, "keychain"
+    return None, None
+
+
+def reauth(t, user):
+    """Renew the session for a long --watch cook.
+
+    Tries the refresh token first (no password required -- login() already
+    wiped it from memory). Falls back to a full re-login only if the refresh
+    token itself is rejected, which needs the password re-resolved. Note: if
+    the password's source was the plain env var, resolve_password() already
+    consumed it at startup (see its docstring), so that fallback path won't
+    have anything to re-resolve for env-only setups -- use Bitwarden or
+    Keychain if you want a --watch cook to survive a refresh-token failure.
+    """
+    try:
+        t.refresh()
+        t.load_grills()
+        return "refresh token"
+    except Exception as refresh_err:
+        pw, _ = resolve_password(user)
+        if not pw:
+            raise TraegerError(
+                f"Refresh failed ({refresh_err}) and no password available for a "
+                "full re-login."
+            ) from refresh_err
+        t.password = pw
+        t.login()
+        t.load_grills()
+        return "full login"
+
+
 def main():
     load_env()
     user = os.environ.get("TRAEGER_USERNAME")
     if not user:
         sys.exit("Missing TRAEGER_USERNAME. Set it in .env.")
 
-    # Password resolution order:
-    #   1. TRAEGER_PASSWORD env (explicit override)
-    #   2. Bitwarden vault item (TRAEGER_BW_ITEM), via an unlocked bw session
-    #   3. macOS Keychain
-    pw = os.environ.get("TRAEGER_PASSWORD")
-    src = "env"
-    if not pw:
-        pw = bitwarden_password(os.environ.get("TRAEGER_BW_ITEM"))
-        src = "bitwarden"
-    if not pw:
-        pw = keychain_password(user)
-        src = "keychain"
+    pw, src = resolve_password(user)
     if not pw:
         sys.exit(
             "No password found. Options:\n"
@@ -346,25 +487,40 @@ def main():
                          for p, s in sorted(stages.items()))
         print(f"Cook plan — {desc}")
 
+    # Spoken updates every tick (not just alarm/stage crossings): --speak or
+    # PELLET_PILOT_SPEAK=1. Off by default so it doesn't talk over you unasked.
+    speak_every_tick = "--speak" in sys.argv or \
+        os.environ.get("PELLET_PILOT_SPEAK", "").lower() in ("1", "true", "yes")
+    if speak_every_tick:
+        print("Speaking an update every tick (--speak).")
+
     if interval is None:
-        one_shot(t, alarms, stages)
+        one_shot(t, alarms, stages, speak_every_tick)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
+    consecutive_failures = 0
     try:
         while True:
             try:
-                one_shot(t, alarms, stages)
+                one_shot(t, alarms, stages, speak_every_tick)
+                consecutive_failures = 0
+                time.sleep(interval)
             except Exception as e:
                 print(f"  poll error (will retry): {e}")
                 # token/signed-URL likely expired (~1h) -- re-auth for long cooks
                 try:
-                    t.login()
-                    t.load_grills()
-                    print("  re-authenticated")
+                    how = reauth(t, user)
+                    print(f"  re-authenticated ({how})")
+                    consecutive_failures = 0
+                    time.sleep(interval)
                 except Exception as e2:
+                    consecutive_failures += 1
+                    backoff = _backoff_seconds(interval, consecutive_failures)
                     print(f"  re-auth failed: {e2}")
-            time.sleep(interval)
+                    print(f"  backing off {backoff:.0f}s (attempt {consecutive_failures}) "
+                          "before retrying, to avoid hammering Cognito")
+                    time.sleep(backoff)
     except KeyboardInterrupt:
         print("\nStopped.")
 
