@@ -170,6 +170,11 @@ done:     ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 > `(target − current) ÷ rate` gives the minutes remaining. Below ~0.05°/min it
 > reports *stalled* (in the plateau band) or *not rising* rather than a bogus ETA.
 
+**See it as a chart:** `plot.py --probe 1` renders the whole cook as an SVG — it
+auto-detects the pull/wrap (from the probe-out temperature spike), draws your stage
+lines, and adds a **dashed projection to the finish time**. `--html` makes it
+interactive (hover any point). This is the graph version of the prediction above.
+
 ### Multi-stage cooks (wrap, then done)
 
 Big cuts have milestones, not one target: pull-to-**wrap** at 165°, then pull-to-rest
@@ -309,6 +314,7 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 
 # Chart a cook — SVG (no deps), interactive HTML, or PNG (matplotlib)
 ./venv/bin/python plot.py --out cook.svg
+./venv/bin/python plot.py --probe 1 --out meat.svg # meat-probe forecast chart (below)
 ./venv/bin/python plot.py --html --out cook.html
 ./venv/bin/python plot.py --png --out cook.png     # pip install -r requirements-plot.txt
 

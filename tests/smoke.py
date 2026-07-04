@@ -143,6 +143,21 @@ def test_stages():
     assert sum("WRAP IT" in m for m in fired) == 1, fired
 
 
+def test_forecast_chart():
+    from plot import clean_and_events, project, render_forecast_svg
+    xs = [float(i) for i in range(10)]
+    temps = [150.0, 152, 231, 220, 154, 156, 158, 160, 162, 164]  # probe-out spike
+    cx, cy, ev = clean_and_events(xs, temps)
+    assert ev and max(cy) < 175, (ev, cy)  # spike detected + removed
+    rate, eta = project([0, 1, 2, 3, 4], [150.0, 152, 154, 156, 158], 205)
+    assert rate > 0 and eta > 0, (rate, eta)
+    sess = [{"_ts": dt.datetime(2026, 7, 4, 10) + dt.timedelta(minutes=2 * i),
+             "probe1_temp": str(150 + i), "probe1_set": "205"} for i in range(12)]
+    svg = render_forecast_svg(sess, 1, {1: [(165.0, "wrap"), (205.0, "done")]})
+    minidom.parseString(svg)
+    assert "done ~" in svg and "wrap 165" in svg and "pulled/wrapped" not in svg, svg[:200]
+
+
 def test_ssrf_guard():
     ok = alarms.assert_safe_url("https://8.8.8.8/hook")  # public HTTPS
     assert ok is True
