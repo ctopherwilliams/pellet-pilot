@@ -171,6 +171,7 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 - [ ] PNG/interactive plot export
 - [ ] Pushover / ntfy / webhook alarm targets
 - [ ] Grafana-friendly export
+- [ ] Issue autopilot — triage open issues, draft a fix plan, and open a **human-reviewed** PR that resolves the issue or implements the request (label-gated, treats issue text as untrusted, never auto-merged)
 
 ---
 
