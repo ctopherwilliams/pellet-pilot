@@ -18,6 +18,9 @@ import sys
 
 import numpy as np
 
+import plan
+from forecast import describe, describe_stages, forecast, forecast_stages
+
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
 
@@ -32,7 +35,10 @@ def load(col):
                 continue
             ts.append(dt.datetime.fromisoformat(r["ts"]))
             val.append(float(v))
-            st = r.get("probe1_set") if col == "probe1_temp" else r.get("set")
+            if col.startswith("probe") and col.endswith("_temp"):
+                st = r.get(col.replace("_temp", "_set"))
+            else:
+                st = r.get("set")
             if st not in (None, "", "None"):
                 target = float(st)
     if len(val) < 2:
@@ -52,6 +58,8 @@ def sparkline(v):
 def main():
     col = "probe1_temp"
     window_min = None
+    if "--probe" in sys.argv:
+        col = f"probe{int(sys.argv[sys.argv.index('--probe') + 1])}_temp"
     if "--col" in sys.argv:
         col = sys.argv[sys.argv.index("--col") + 1]
         if col == "probe":
@@ -69,30 +77,27 @@ def main():
         if len(val) < 2:
             sys.exit("Not enough points in that window.")
 
-    # linear fit: temp = slope * minutes + intercept
-    slope, intercept = np.polyfit(mins, val, 1)
     span = mins[-1] - mins[0]
+    fc = forecast(mins, val, target)      # recent-window, stall-aware prediction
+    rate = fc["rate"]
 
     print(f"=== {col} trend ===")
     print(f"points:   {len(val)}  over {span:.1f} min")
     print(f"current:  {val[-1]:.0f}°   (min {val.min():.0f}°, max {val.max():.0f}°)")
     print(f"trend:    {sparkline(val)}")
-    print(f"rate:     {slope:+.2f} °/min   ({slope*60:+.0f} °/hr)")
+    if rate is not None:
+        print(f"rate:     {rate:+.2f} °/min   ({rate*60:+.0f} °/hr, recent)")
 
-    if target and target > 0:
-        remaining = target - val[-1]
-        if slope > 0.01 and remaining > 0:
-            eta_min = remaining / slope
-            eta_clock = (ts[-1] + dt.timedelta(minutes=eta_min)).strftime("%-I:%M %p")
-            print(f"target:   {target:.0f}°  ->  ~{eta_min:.0f} min away (≈ {eta_clock})")
-        elif remaining <= 0:
-            print(f"target:   {target:.0f}°  ->  reached ✅")
-        else:
-            print(f"target:   {target:.0f}°  ->  not rising; no ETA")
-
-    # stall detector for probes (the classic brisket/pork-shoulder plateau)
-    if col == "probe1_temp" and span >= 15 and abs(slope) < 0.3 and 150 <= val[-1] <= 175:
-        print("note:     flat rise in the 150–170° band — likely the stall. Normal; ride it out or wrap.")
+    # stage-aware if a plan exists for this probe (--stage overrides .cook_plan.json)
+    stage_specs = [sys.argv[i + 1] for i, a in enumerate(sys.argv)
+                   if a == "--stage" and i + 1 < len(sys.argv)]
+    stages = plan.build_plan(stage_specs) or plan.load_plan()
+    probe_idx = (int(col.replace("probe", "").replace("_temp", ""))
+                 if col.startswith("probe") and col.endswith("_temp") else None)
+    if probe_idx and stages.get(probe_idx):
+        print(f"plan:     {describe_stages(forecast_stages(mins, val, stages[probe_idx]), now=ts[-1])}")
+    elif target:
+        print(f"done:     {describe(fc, target, now=ts[-1])}")
 
 
 if __name__ == "__main__":

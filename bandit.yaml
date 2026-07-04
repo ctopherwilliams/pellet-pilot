@@ -1,2 +1,2 @@
 skips: [B404, B603, B607]
-exclude_dirs: [venv, .venv]
+exclude_dirs: [venv, .venv, .testvenv, tests]

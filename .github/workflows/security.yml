@@ -40,7 +40,7 @@ jobs:
         run: pip-audit -r requirements.txt
 
       - name: Static analysis (bandit)
-        run: bandit -c bandit.yaml -r poll.py traeger_client.py trend.py -ll
+        run: bandit -c bandit.yaml -r . -ll
 
   # Stable check name for branch protection. Passes only if the whole matrix passed,
   # so the required status check does not change when the matrix does.

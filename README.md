@@ -50,15 +50,146 @@ cp .env.example .env          # add your grill account email
 ```
 
 ```text
-[2026-07-04T13:22:07] grill 277° (set 275°)  probe 168° (set 203°)  [Running]
+[13:22:07] grill 277° (set 275°)  P1 168°→203°  [Running]
+  ⏱  P1 ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
+```
 
+---
+
+## 💻 How to run it — Mac, Windows, or Claude Code
+
+Two ways to use Pellet Pilot. Both work on **macOS, Windows, and Linux** — all you need is [Python 3.12+](https://www.python.org/downloads/).
+
+### Option A — run it yourself (any computer)
+
+**One-time setup** — paste into Terminal (Mac/Linux) or PowerShell (Windows):
+
+<details open>
+<summary><b>macOS / Linux</b></summary>
+
+```bash
+git clone https://github.com/ctopherwilliams/pellet-pilot.git
+cd pellet-pilot
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env          # then edit .env with your grill-app email + password
+```
+
+Run any tool with `./venv/bin/python <tool>.py`.
+</details>
+
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
+
+```powershell
+git clone https://github.com/ctopherwilliams/pellet-pilot.git
+cd pellet-pilot
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
+copy .env.example .env         # then edit .env with your grill-app email + password
+```
+
+Run any tool with `venv\Scripts\python <tool>.py`.
+</details>
+
+**Then, during a cook — it's just two windows:**
+
+1. **Window 1 — start the loop and leave it running.** It checks the grill every 30 seconds, saves each reading to `cook_log.csv`, prints a live "when's it done" line, and beeps/notifies when you hit a stage:
+   ```
+   poll.py --watch 30 --stage 165:wrap --stage 205:done
+   ```
+   Every tick = one fresh reading logged + the prediction refreshed. Keep it open all cook; `Ctrl-C` to stop.
+
+2. **Window 2 — ask "how's it going?" whenever you like:**
+   ```
+   trend.py               # current rate + ETA to the next gate
+   history.py list        # your past cooks
+   plot.py --out cook.svg # a chart of this cook
+   ```
+
+That's the whole idea: **one window logging + predicting, another for analysis.** (Prefix each command with `./venv/bin/python` on Mac/Linux, or `venv\Scripts\python` on Windows. Credential setup is in the **Credentials** section below.)
+
+### Option B — run it inside Claude Code (chat with your cook) 🔥
+
+If you have [Claude Code](https://claude.com/claude-code), this gets much nicer — you don't memorize any commands, you just **talk to it**. Open the `pellet-pilot` folder in Claude Code (`cd pellet-pilot && claude`) and say things like:
+
+> - *"Start logging my cook — wrap at 165, done at 205."*
+> - *"What's my trend? When will it be done?"*
+> - *"Is it stalling? Should I wrap it?"*
+> - *"Check on it every 20 minutes and tell me when it hits the wrap temp."*
+> - *"Show me a chart of this cook."* · *"How did my last brisket turn out?"*
+
+Claude Code runs the tools for you, reads the numbers, explains them in plain English, and can even **check back on a schedule and ping you**. It's the difference between reading `+0.21°/min` yourself and being told *"it's stalling at 152°, ~90 min from done — wrap it if you're in a hurry."* This whole project was built and babysat exactly this way.
+
+---
+
+## 🔮 When will it be done?
+
+This is the headline feature: Pellet Pilot watches the climb and tells you **when
+each probe will hit its target** — live, as it polls.
+
+```bash
+./venv/bin/python poll.py --watch 30 --alarm 203
+```
+
+```text
+[13:22:07] grill 277° (set 275°)  P1 168°→203°  [Running]
+  ⏱  P1 ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
+```
+
+Read that as: **probe 1 reaches 203° in about 47 minutes, ~4:45 PM, rising 0.75°/min.**
+The estimate refreshes every reading and is fit from a **recent window** of data, so
+it tracks the cook speeding up or slowing down instead of lagging on a whole-cook average.
+
+**During the stall** — the 150–175° plateau where a big cut parks for a while — the
+rate flattens, so instead of guessing a wild time it tells you plainly:
+
+```text
+  ⏱  P1 stalled near 152° · hold, or wrap to push through  (+0.03°/min)
+```
+
+Want a one-off check without the live loop? `trend.py` prints the same prediction
+from your log at any time:
+
+```bash
+./venv/bin/python trend.py             # probe 1
+./venv/bin/python trend.py --probe 2   # a second probe
+./venv/bin/python trend.py --window 15 # base it on just the last 15 min
+```
+
+```text
 === probe1_temp trend ===
 points:   34  over 61.0 min
 current:  168°   (min 122°, max 168°)
 trend:    ▁▁▂▂▃▃▄▄▅▅▆▆▇▇██
-rate:     +0.75 °/min   (+45 °/hr)
-target:   203°  ->  ~47 min away (≈ 4:45 PM)
+rate:     +0.75 °/min   (+45 °/hr, recent)
+done:     ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 ```
+
+> How it works: a least-squares fit over the recent window gives °/min, then
+> `(target − current) ÷ rate` gives the minutes remaining. Below ~0.05°/min it
+> reports *stalled* (in the plateau band) or *not rising* rather than a bogus ETA.
+
+### Multi-stage cooks (wrap, then done)
+
+Big cuts have milestones, not one target: pull-to-**wrap** at 165°, then pull-to-rest
+(**done**) at 203°. Define the **stages** and Pellet Pilot predicts the *next* one and
+estimates the final, advancing as each is crossed:
+
+```bash
+./venv/bin/python poll.py --watch 30 --stage 165:wrap --stage 203:done
+```
+
+```text
+[13:22:07] grill 277°  P1 158° → wrap 165° → done 203°  [Running]
+  ⏱  P1 next: WRAP at 165° in ~9 min (≈ 1:31 PM)  ·  then done 203° ~2h 10m (est)
+```
+
+When it crosses a stage you get a labeled alarm — **"P1 165° — WRAP IT"** — then the
+prediction rolls to the next stage. Stage syntax is `[PROBE:]TEMP[:LABEL]` (e.g.
+`--stage 2:170:wrap`); up to 4 stages per probe. Set them once and `trend.py` /
+`history.py` reuse the plan automatically (saved to a gitignored `.cook_plan.json`;
+`--no-plan` to skip). `history.py show` reports when each stage was reached.
 
 ---
 
@@ -164,13 +295,55 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 
 ---
 
+## 🧰 More tools
+
+```bash
+# Multiple probes: alarms and trends target a specific probe
+./venv/bin/python poll.py --watch 30 --alarm 1:203 --alarm 2:165
+./venv/bin/python trend.py --probe 2
+
+# Browse past cooks (sessions split on gaps in the log)
+./venv/bin/python history.py list
+./venv/bin/python history.py show 1
+./venv/bin/python history.py summary
+
+# Chart a cook — SVG (no deps), interactive HTML, or PNG (matplotlib)
+./venv/bin/python plot.py --out cook.svg
+./venv/bin/python plot.py --html --out cook.html
+./venv/bin/python plot.py --png --out cook.png     # pip install -r requirements-plot.txt
+
+# Grafana-friendly export (local files) or a localhost Prometheus endpoint
+./venv/bin/python export.py --format influx --out cook.lp
+./venv/bin/python export.py --serve                # http://127.0.0.1:9109/metrics
+```
+
+**Remote alarms** (in addition to the local macOS notification) — set any of these
+env vars and probe-crossing alerts are delivered there too:
+
+| Provider | Env |
+|---|---|
+| Pushover | `PUSHOVER_TOKEN`, `PUSHOVER_USER` |
+| ntfy | `NTFY_TOPIC` (server via `NTFY_SERVER`) |
+| Webhook | `ALARM_WEBHOOK_URL` (POSTed JSON) |
+
+HTTPS is required and the generic webhook is SSRF-guarded (private/loopback/metadata
+addresses are refused). See [SECURITY.md](SECURITY.md).
+
+**Issue autopilot** — apply the `autofix` label to an issue for an AI-drafted fix
+plan, then `autofix-approved` to get a human-reviewed PR. Label-gated, never
+auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECURITY.md).
+
+---
+
 ## 🗺 Roadmap
 
-- [ ] `history.py` — browse & re-plot past cooks, per-session summaries
-- [ ] Multi-probe support in the trend view
-- [ ] PNG/interactive plot export
-- [ ] Pushover / ntfy / webhook alarm targets
-- [ ] Grafana-friendly export
+- [x] `history.py` — browse & re-plot past cooks, per-session summaries
+- [x] Multi-probe support in the trend view
+- [x] PNG/interactive plot export
+- [x] Pushover / ntfy / webhook alarm targets
+- [x] Grafana-friendly export
+- [x] Issue autopilot — triage issues, draft a fix, open a human-reviewed PR (label-gated, untrusted issue text, never auto-merged)
+- [x] Multi-stage cooks — per-probe wrap/done stages with next-stage prediction & labeled alarms
 
 ---
 

@@ -17,6 +17,9 @@ import subprocess
 import sys
 import time
 
+import plan
+from alarms import notify_remote
+from forecast import describe, describe_stages, forecast, forecast_stages
 from traeger_client import Traeger, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
@@ -24,8 +27,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BW_SESSION_FILE = os.path.join(HERE, ".bw_session")
 
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
-FIELDS = ["ts", "thing", "grill", "set", "ambient", "system_status",
-          "probe1_temp", "probe1_set", "probe1_connected", "probe1_alarm"]
+
+MAX_PROBES = 4  # widen the log to support multiple meat probes
+_BASE_FIELDS = ["ts", "thing", "grill", "set", "ambient", "system_status"]
+FIELDS = _BASE_FIELDS + [
+    f"probe{i}_{suffix}"
+    for i in range(1, MAX_PROBES + 1)
+    for suffix in ("temp", "set", "connected", "alarm")
+]
 
 # Controller status codes (from the WiFire protocol). On newer Timberline
 # controllers 99 is the normal running state, not "offline" -- so we trust
@@ -132,19 +141,22 @@ def bitwarden_password(item):
 
 
 def row_from(reading):
-    p = reading["probes"][0] if reading["probes"] else {}
-    return {
+    row = {
         "ts": dt.datetime.now().isoformat(timespec="seconds"),
         "thing": reading["thing"],
         "grill": reading["grill"],
         "set": reading["set"],
         "ambient": reading["ambient"],
         "system_status": reading["system_status"],
-        "probe1_temp": p.get("get_temp"),
-        "probe1_set": p.get("set_temp"),
-        "probe1_connected": p.get("connected"),
-        "probe1_alarm": p.get("alarm_fired"),
     }
+    probes = reading["probes"]
+    for i in range(1, MAX_PROBES + 1):
+        p = probes[i - 1] if i - 1 < len(probes) else {}
+        row[f"probe{i}_temp"] = p.get("get_temp")
+        row[f"probe{i}_set"] = p.get("set_temp")
+        row[f"probe{i}_connected"] = p.get("connected")
+        row[f"probe{i}_alarm"] = p.get("alarm_fired")
+    return row
 
 
 def append(row):
@@ -156,35 +168,105 @@ def append(row):
         w.writerow(row)
 
 
-_fired = set()  # alarm thresholds already triggered this run
+_fired = set()          # (probe_index, threshold) pairs already triggered this run
+_eta_samples = {}       # probe index -> [(datetime, temp)] for the live prediction
+
+
+def print_forecasts(row, stages=None):
+    """Live 'when's it done' line per connected probe — stage-aware if a plan exists."""
+    stages = stages or {}
+    now = dt.datetime.fromisoformat(row["ts"])
+    for i in range(1, MAX_PROBES + 1):
+        temp = row.get(f"probe{i}_temp")
+        if not row.get(f"probe{i}_connected") or temp is None:
+            continue
+        samples = _eta_samples.setdefault(i, [])
+        samples.append((now, float(temp)))
+        t0 = samples[0][0]
+        mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
+        temps = [v for _, v in samples]
+        if len(temps) < 2:
+            continue  # wait for a second reading before predicting
+        if stages.get(i):
+            print(f"  ⏱  P{i} {describe_stages(forecast_stages(mins, temps, stages[i]), now=now)}")
+        elif row.get(f"probe{i}_set"):
+            target = float(row[f"probe{i}_set"])
+            fc = forecast(mins, temps, target)
+            if fc["status"] != "insufficient":
+                print(f"  ⏱  P{i} {describe(fc, target, now=now)}")
+
+
+_STAGE_ACTIONS = {"wrap": "WRAP IT", "done": "DONE — rest it", "rest": "RESTING done"}
+
+
+def check_stage_alarms(row, stages):
+    """Fire a labeled alarm once when a probe crosses each stage temp."""
+    for probe, stagelist in stages.items():
+        temp = row.get(f"probe{probe}_temp")
+        if temp is None:
+            continue
+        for stemp, label in stagelist:
+            key = ("stage", probe, stemp)
+            if temp >= stemp and key not in _fired:
+                _fired.add(key)
+                action = _STAGE_ACTIONS.get(label.lower(), label.upper())
+                msg = f"Probe {probe} hit {int(stemp)}° — {action}"
+                notify("Traeger stage", msg)
+                notify_remote("Traeger stage", msg)
+                print(f"  🔔 STAGE: probe {probe} {int(stemp)}° — {action}")
 
 
 def check_alarms(row, alarms):
-    """Fire once when the probe rises to/through each threshold."""
-    temp = row["probe1_temp"]
-    if temp is None:
-        return
-    for thr in alarms:
-        if temp >= thr and thr not in _fired:
-            _fired.add(thr)
-            notify("Traeger probe", f"Probe reached {int(thr)}°F (now {int(temp)}°F)")
-            print(f"  🔔 ALARM: probe crossed {int(thr)}°F")
+    """Fire once when a probe rises to/through each of its thresholds.
+
+    `alarms` maps a 1-based probe index to an iterable of threshold temps.
+    """
+    for probe, thresholds in alarms.items():
+        temp = row.get(f"probe{probe}_temp")
+        if temp is None:
+            continue
+        for thr in thresholds:
+            key = (probe, thr)
+            if temp >= thr and key not in _fired:
+                _fired.add(key)
+                msg = f"Probe {probe} reached {int(thr)}°F (now {int(temp)}°F)"
+                notify("Traeger probe", msg)          # local desktop/voice
+                notify_remote("Traeger probe", msg)   # Pushover/ntfy/webhook, if configured
+                print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=()):
+def one_shot(t, alarms=None, stages=None):
+    alarms = alarms or {}
+    stages = stages or {}
     status = t.poll()
     for thing, doc in status.items():
         reading = parse_status(thing, doc)
         row = row_from(reading)
         append(row)
-        probe = f"{row['probe1_temp']}°" if row["probe1_temp"] is not None else "--"
         state = decode_status(row["system_status"], row["probe1_connected"], row["grill"])
-        print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  "
-              f"probe {probe} (set {row['probe1_set']}°)  [{state}]")
-        # auto-arm the probe's own target if the user didn't specify thresholds
-        active = list(alarms) if alarms else (
-            [row["probe1_set"]] if row["probe1_set"] else [])
-        check_alarms(row, active)
+        parts = []
+        for i in range(1, MAX_PROBES + 1):
+            if not row.get(f"probe{i}_connected"):
+                continue
+            if stages.get(i):
+                plan_txt = " → ".join(f"{lbl} {int(t_)}°" for t_, lbl in stages[i])
+                parts.append(f"P{i} {row[f'probe{i}_temp']}° → {plan_txt}")
+            else:
+                tgt = row.get(f"probe{i}_set")
+                parts.append(f"P{i} {row[f'probe{i}_temp']}°" + (f"→{tgt}°" if tgt else ""))
+        probes_txt = "  ".join(parts) if parts else "no probes"
+        print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
+        print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
+        if stages:
+            check_stage_alarms(row, stages)
+        # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
+        active = alarms
+        if not active and not stages:
+            active = {i: [row[f"probe{i}_set"]]
+                      for i in range(1, MAX_PROBES + 1)
+                      if row.get(f"probe{i}_connected") and row.get(f"probe{i}_set")}
+        if active:
+            check_alarms(row, active)
 
 
 def main():
@@ -226,29 +308,53 @@ def main():
         i = sys.argv.index("--watch")
         interval = int(sys.argv[i + 1]) if i + 1 < len(sys.argv) else 30
 
-    # Alarm thresholds: repeatable --alarm N, and/or env PROBE_ALARMS="160,165".
-    # If none given, one_shot auto-arms the probe's own target temp.
-    alarms = []
+    # Alarm thresholds: repeatable --alarm [PROBE:]TEMP and/or env PROBE_ALARMS.
+    #   "203"   -> probe 1 at 203°      "2:203" -> probe 2 at 203°
+    # If none given, one_shot auto-arms each connected probe's own target temp.
+    alarms = {}
+
+    def _add_alarm(spec):
+        spec = spec.strip()
+        if not spec:
+            return
+        probe, temp = (spec.split(":", 1) if ":" in spec else ("1", spec))
+        alarms.setdefault(int(probe), set()).add(float(temp))
+
     for j, a in enumerate(sys.argv):
         if a == "--alarm" and j + 1 < len(sys.argv):
-            alarms.append(float(sys.argv[j + 1]))
+            _add_alarm(sys.argv[j + 1])
     for v in (os.environ.get("PROBE_ALARMS") or "").split(","):
-        v = v.strip()
-        if v:
-            alarms.append(float(v))
-    alarms = sorted(set(alarms))
+        _add_alarm(v)
+    alarms = {p: sorted(ts) for p, ts in alarms.items()}
     if alarms:
-        print(f"Alarms armed at: {', '.join(str(int(a)) for a in alarms)}°F")
+        desc = "; ".join(f"P{p} {'/'.join(str(int(x)) for x in ts)}"
+                         for p, ts in sorted(alarms.items()))
+        print(f"Alarms armed — {desc} °F")
+
+    # Cook stages: --stage [PROBE:]TEMP[:LABEL] and/or PROBE_STAGES env; persisted to
+    # .cook_plan.json (reused by trend.py/history.py) unless --no-plan.
+    stage_specs = [sys.argv[j + 1] for j, a in enumerate(sys.argv)
+                   if a == "--stage" and j + 1 < len(sys.argv)]
+    stage_specs += (os.environ.get("PROBE_STAGES") or "").split(",")
+    stages = plan.build_plan(stage_specs)
+    if stages and "--no-plan" not in sys.argv:
+        plan.save_plan(stages)
+    elif not stages:
+        stages = plan.load_plan()  # reuse a persisted plan if none given
+    if stages:
+        desc = "; ".join("P%d: %s" % (p, " → ".join(f"{lbl} {int(t_)}°" for t_, lbl in s))
+                         for p, s in sorted(stages.items()))
+        print(f"Cook plan — {desc}")
 
     if interval is None:
-        one_shot(t, alarms)
+        one_shot(t, alarms, stages)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
     try:
         while True:
             try:
-                one_shot(t, alarms)
+                one_shot(t, alarms, stages)
             except Exception as e:
                 print(f"  poll error (will retry): {e}")
                 # token/signed-URL likely expired (~1h) -- re-auth for long cooks
