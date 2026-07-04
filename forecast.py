@@ -77,13 +77,14 @@ def forecast_stages(times_min, temps, stages, window_min=DEFAULT_WINDOW_MIN):
     return out
 
 
+def _clock_str(now, eta_min):
+    return (now + dt.timedelta(minutes=eta_min)).strftime("%-I:%M %p")
+
+
 def _stage_phrase(s, now):
     label = s["label"].upper()
     if s["status"] == "on_track" and s["eta_min"] is not None:
-        clock = ""
-        if now is not None:
-            clock = " (≈ " + (now + dt.timedelta(minutes=s["eta_min"])).strftime("%-I:%M %p") + ")"
-        return f"{label} at {int(s['temp'])}° in ~{s['eta_min']:.0f} min{clock}"
+        return f"{label} at {int(s['temp'])}° in ~{s['eta_min']:.0f} min (≈ {_clock_str(now, s['eta_min'])})"
     if s["status"] == "stalled":
         return f"{label} at {int(s['temp'])}° — stalled, hold or wrap"
     if s["status"] == "not_rising":
@@ -91,8 +92,13 @@ def _stage_phrase(s, now):
     return f"{label} at {int(s['temp'])}°"
 
 
-def describe_stages(fcs, now=None):
-    """Human 'next: ... · then: ...' line from a forecast_stages dict."""
+def describe_stages(fcs, now):
+    """Human 'next: ... · then: ...' line from a forecast_stages dict.
+
+    `now` is required, not optional: every ETA this project reports must carry
+    a clock time ("≈ 4:53 PM"), not just a minutes-remaining count -- including
+    the 'final stage' estimate, which previously dropped it.
+    """
     if fcs["current"] is None:
         return "no probe data"
     if fcs["done"]:
@@ -101,14 +107,18 @@ def describe_stages(fcs, now=None):
     if fcs["final"]:
         fin = fcs["final"]
         if fin["status"] == "on_track" and fin["eta_min"] is not None:
-            parts.append(f"then {fin['label']} {int(fin['temp'])}° ~{fin['eta_min']:.0f} min (est)")
+            clock = _clock_str(now, fin["eta_min"])
+            parts.append(f"then {fin['label']} {int(fin['temp'])}° ~{fin['eta_min']:.0f} min (≈ {clock}, est)")
         else:
             parts.append(f"then {fin['label']} {int(fin['temp'])}°")
     return "  ·  ".join(parts)
 
 
-def describe(fc, target, now=None):
-    """One-line human summary of a forecast dict. `now` = datetime for a clock time."""
+def describe(fc, target, now):
+    """One-line human summary of a forecast dict.
+
+    `now` is required: every ETA must carry a clock time, not just minutes.
+    """
     rate = fc["rate"]
     r = f"{rate:+.2f}°/min" if rate is not None else "—"
     status = fc["status"]
@@ -123,7 +133,4 @@ def describe(fc, target, now=None):
     if status == "not_rising":
         return f"not rising toward {int(target)}°  ({r})"
     eta = fc["eta_min"]
-    clock = ""
-    if now is not None:
-        clock = " (≈ " + (now + dt.timedelta(minutes=eta)).strftime("%-I:%M %p") + ")"
-    return f"~{eta:.0f} min to {int(target)}°{clock} · {r}"
+    return f"~{eta:.0f} min to {int(target)}° (≈ {_clock_str(now, eta)}) · {r}"
