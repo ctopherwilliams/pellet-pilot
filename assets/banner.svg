@@ -56,23 +56,23 @@
   <!-- tagline -->
   <text x="216" y="169" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="500" fill="#baa998">Real-time telemetry &amp; cook analytics for WiFi pellet grills</text>
 
-  <!-- feature pills: exact-aligned left edge (x=216), even 14px gaps -->
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="0.4">
-    <g>
-      <rect x="216" y="192" width="204" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="240" cy="211" r="4.5" fill="url(#ember)"/>
-      <text x="256" y="217" fill="#ffb454">LIVE PROBE TRENDS</text>
-    </g>
-    <g>
-      <rect x="434" y="192" width="132" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="458" cy="211" r="4.5" fill="url(#ember)"/>
-      <text x="474" y="217" fill="#ffb454">COOK ETA</text>
-    </g>
-    <g>
-      <rect x="580" y="192" width="164" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="604" cy="211" r="4.5" fill="url(#ember)"/>
-      <text x="620" y="217" fill="#ffb454">TEMP ALARMS</text>
-    </g>
+  <!-- feature pills. Each pill width = 54 (18 pad + 9 dot + 9 gap + 18 pad) + measured
+       text width. textLength locks the label's rendered width so it can never overflow
+       regardless of the viewer's font; equal 18px padding centers the dot+label group.
+       Vertical: dot cy = pill center (211); caps centered via baseline y = 216.5. -->
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffb454">
+    <!-- LIVE PROBE TRENDS · text 168 → pill 222 -->
+    <rect x="216" y="192" width="222" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+    <circle cx="238.5" cy="211" r="4.5" fill="url(#ember)"/>
+    <text x="252" y="216.5" textLength="168" lengthAdjust="spacingAndGlyphs">LIVE PROBE TRENDS</text>
+    <!-- COOK ETA · text 84 → pill 138 -->
+    <rect x="452" y="192" width="138" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+    <circle cx="474.5" cy="211" r="4.5" fill="url(#ember)"/>
+    <text x="488" y="216.5" textLength="84" lengthAdjust="spacingAndGlyphs">COOK ETA</text>
+    <!-- TEMP ALARMS · text 117 → pill 171 -->
+    <rect x="604" y="192" width="171" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+    <circle cx="626.5" cy="211" r="4.5" fill="url(#ember)"/>
+    <text x="640" y="216.5" textLength="117" lengthAdjust="spacingAndGlyphs">TEMP ALARMS</text>
   </g>
 
   <text x="1246" y="286" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#6b5c4f">Unofficial · not affiliated with Traeger</text>
