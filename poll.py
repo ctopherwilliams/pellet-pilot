@@ -110,25 +110,63 @@ def speak(text):
         pass
 
 
+def _speech_eta(status, eta_min, now):
+    """Spoken ETA fragment appended after the target/stage phrase.
+
+    Mirrors the same recent-window, stall-aware forecast used for the printed
+    prediction (see print_forecasts/forecast) -- never invents an ETA through
+    a stall.
+    """
+    if status == "on_track" and eta_min is not None:
+        clock = ""
+        if now is not None:
+            clock = f", around {(now + dt.timedelta(minutes=eta_min)).strftime('%-I:%M %p')}"
+        return f", about {eta_min:.0f} minutes away{clock}"
+    if status == "stalled":
+        return ", but it's stalled, no estimate right now"
+    return ""
+
+
 def speech_for_probes(row, stages):
-    """Build a short spoken summary of every connected probe's temp/target."""
+    """Build a short spoken summary of every connected probe: temp, next
+    stage/target, and an ETA -- using the same live sample buffer and forecast
+    logic that drives the printed prediction (print_forecasts must have run
+    first this tick so _eta_samples is up to date; one_shot() guarantees that).
+    """
+    now = dt.datetime.fromisoformat(row["ts"])
     parts = []
     for i in range(1, MAX_PROBES + 1):
         temp = row.get(f"probe{i}_temp")
         if not row.get(f"probe{i}_connected") or temp is None:
             continue
+        samples = _eta_samples.get(i, [])
+        if samples:
+            t0 = samples[0][0]
+            mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
+            temps = [v for _, v in samples]
+        else:
+            mins, temps = [], []
         if stages.get(i):
             nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
-            if nxt:
-                parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}")
-            else:
+            if not nxt:
                 parts.append(f"probe {i}, {int(temp)} degrees, all stages done")
+                continue
+            eta = ""
+            if len(temps) >= 2:
+                fcs = forecast_stages(mins, temps, stages[i])
+                if fcs["next"]:
+                    eta = _speech_eta(fcs["next"]["status"], fcs["next"]["eta_min"], now)
+            parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}{eta}")
         else:
             tgt = row.get(f"probe{i}_set")
-            if tgt:
-                parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}")
-            else:
+            if not tgt:
                 parts.append(f"probe {i}, {int(temp)} degrees")
+                continue
+            eta = ""
+            if len(temps) >= 2:
+                fc = forecast(mins, temps, float(tgt))
+                eta = _speech_eta(fc["status"], fc["eta_min"], now)
+            parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}{eta}")
     return ". ".join(parts)
 
 

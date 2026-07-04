@@ -378,13 +378,39 @@ def test_speak_every_tick():
 
 
 def test_speech_for_probes_stage_aware():
-    row = {"probe1_temp": 168, "probe1_connected": True, "probe1_set": 205,
+    poll._eta_samples.clear()
+    now = dt.datetime(2026, 7, 4, 12, 0, 0)
+    row = {"ts": now.isoformat(), "probe1_temp": 168, "probe1_connected": True, "probe1_set": 205,
            "probe2_temp": 210, "probe2_connected": True, "probe2_set": 205}
     text_no_stages = poll.speech_for_probes(row, {})
     assert "target 205" in text_no_stages, text_no_stages
     text_staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
     assert "next wrap" not in text_staged  # 168 already past 165 -> next stage is done
     assert "next done at 205" in text_staged, text_staged
+
+
+def test_speech_for_probes_includes_eta():
+    # The spoken update must carry an ETA computed the same way as the printed
+    # prediction (recent-window forecast), not just bare temp/target.
+    poll._eta_samples.clear()
+    t0 = dt.datetime(2026, 7, 4, 12, 0, 0)
+    t1 = t0 + dt.timedelta(minutes=10)
+    poll._eta_samples[1] = [(t0, 150.0), (t1, 160.0)]  # +1 deg/min
+    row = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
+
+    text = poll.speech_for_probes(row, {})
+    assert "target 205" in text, text
+    assert "minutes away" in text and "around" in text, text  # (205-160)/1 = 45 min
+
+    staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
+    assert "next wrap at 165" in staged, staged
+    assert "minutes away" in staged, staged  # (165-160)/1 = 5 min
+
+    # a stalled probe must NOT get a fabricated ETA
+    poll._eta_samples[1] = [(t0, 160.0), (t1, 160.0)]  # flat
+    row2 = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
+    flat_text = poll.speech_for_probes(row2, {})
+    assert "minutes away" not in flat_text, flat_text
 
 
 def test_backoff_seconds():
