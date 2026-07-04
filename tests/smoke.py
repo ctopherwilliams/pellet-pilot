@@ -123,6 +123,16 @@ def test_forecast():
     assert fc_mod.forecast([0], [150], 165)["status"] == "insufficient"
 
 
+def test_forecast_zero_variance_window():
+    # Two (or more) samples landing at the identical timestamp (e.g. two ticks
+    # in the same second) must degrade to "insufficient", not crash polyfit on
+    # a singular/zero-variance x -- this reproduces a real LinAlgError seen
+    # when --watch's live sample buffer picks up a same-second duplicate.
+    fc = fc_mod.forecast([5.0, 5.0, 5.0], [160.0, 161.0, 162.0], 205)
+    assert fc["status"] == "insufficient", fc
+    assert fc["rate"] is None and fc["eta_min"] is None, fc
+
+
 def test_stages():
     p = plan.build_plan(["203:done", "165:wrap", "2:170"])
     assert p[1] == [(165.0, "wrap"), (203.0, "done")], p
@@ -338,6 +348,43 @@ def test_bitwarden_session_via_env_not_argv():
         assert captured["env"]["BW_SESSION"] == "SESSIONKEY", captured["env"]
     finally:
         poll.subprocess.run, poll._bw_session = orig_run, orig_bw
+
+
+def test_speak_every_tick():
+    # New: --speak/PELLET_PILOT_SPEAK announces every tick via macOS `say`,
+    # not just alarm/stage crossings (off by default).
+    class _FakeTraeger:
+        def poll(self):
+            return {"g": {"status": {
+                "grill": 250, "set": 250, "ambient": 70, "system_status": 6,
+                "connected": True, "units": 1,
+                "acc": [{"type": "probe", "con": 1, "uuid": "p1",
+                         "probe": {"get_temp": 168, "set_temp": 205, "alarm_fired": 0}}],
+            }}}
+
+    spoken = []
+    orig_speak, poll.speak = poll.speak, lambda text: spoken.append(text)
+    orig_append, poll.append = poll.append, lambda row: None  # avoid writing cook_log.csv
+    poll._eta_samples.clear()
+    poll._fired.clear()
+    try:
+        poll.one_shot(_FakeTraeger(), speak_every_tick=False)
+        assert spoken == [], "must stay silent when speak_every_tick is off"
+        poll.one_shot(_FakeTraeger(), speak_every_tick=True)
+        assert len(spoken) == 1, spoken
+        assert "168" in spoken[0] and "205" in spoken[0], spoken
+    finally:
+        poll.speak, poll.append = orig_speak, orig_append
+
+
+def test_speech_for_probes_stage_aware():
+    row = {"probe1_temp": 168, "probe1_connected": True, "probe1_set": 205,
+           "probe2_temp": 210, "probe2_connected": True, "probe2_set": 205}
+    text_no_stages = poll.speech_for_probes(row, {})
+    assert "target 205" in text_no_stages, text_no_stages
+    text_staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
+    assert "next wrap" not in text_staged  # 168 already past 165 -> next stage is done
+    assert "next done at 205" in text_staged, text_staged
 
 
 def test_backoff_seconds():

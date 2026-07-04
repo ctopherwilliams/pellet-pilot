@@ -5,6 +5,7 @@ Poll the Traeger and append readings to cook_log.csv.
 Usage:
   ./venv/bin/python poll.py            # one reading, printed + logged
   ./venv/bin/python poll.py --watch 30 # log every 30s until Ctrl-C
+  ./venv/bin/python poll.py --watch 30 --speak  # + a spoken update every tick
 
 Credentials come from environment or a local .env file (see .env.example):
   TRAEGER_USERNAME, TRAEGER_PASSWORD
@@ -93,6 +94,42 @@ def notify(title, message):
     except FileNotFoundError:
         pass
     print("\a", end="")  # terminal bell
+
+
+def speak(text):
+    """Best-effort spoken update via macOS `say` -- no banner, no bell.
+
+    Unlike notify(), this is meant to run every tick (not just on alarm/stage
+    crossings), so it's deliberately quieter: speech only. No-op elsewhere or
+    if `say` isn't installed.
+    """
+    clean = _CONTROL_CHARS.sub(" ", text).replace("\n", " ").replace("\r", " ")
+    try:
+        subprocess.run(["say", clean], capture_output=True)
+    except FileNotFoundError:
+        pass
+
+
+def speech_for_probes(row, stages):
+    """Build a short spoken summary of every connected probe's temp/target."""
+    parts = []
+    for i in range(1, MAX_PROBES + 1):
+        temp = row.get(f"probe{i}_temp")
+        if not row.get(f"probe{i}_connected") or temp is None:
+            continue
+        if stages.get(i):
+            nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
+            if nxt:
+                parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}")
+            else:
+                parts.append(f"probe {i}, {int(temp)} degrees, all stages done")
+        else:
+            tgt = row.get(f"probe{i}_set")
+            if tgt:
+                parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}")
+            else:
+                parts.append(f"probe {i}, {int(temp)} degrees")
+    return ". ".join(parts)
 
 
 def load_env():
@@ -260,7 +297,7 @@ def check_alarms(row, alarms):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None, stages=None):
+def one_shot(t, alarms=None, stages=None, speak_every_tick=False):
     alarms = alarms or {}
     stages = stages or {}
     status = t.poll()
@@ -282,6 +319,10 @@ def one_shot(t, alarms=None, stages=None):
         probes_txt = "  ".join(parts) if parts else "no probes"
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
+        if speak_every_tick:
+            text = speech_for_probes(row, stages)
+            if text:
+                speak(f"Update. {text}. Grill {int(row['grill'])} degrees.")
         if stages:
             check_stage_alarms(row, stages)
         # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
@@ -408,8 +449,15 @@ def main():
                          for p, s in sorted(stages.items()))
         print(f"Cook plan — {desc}")
 
+    # Spoken updates every tick (not just alarm/stage crossings): --speak or
+    # PELLET_PILOT_SPEAK=1. Off by default so it doesn't talk over you unasked.
+    speak_every_tick = "--speak" in sys.argv or \
+        os.environ.get("PELLET_PILOT_SPEAK", "").lower() in ("1", "true", "yes")
+    if speak_every_tick:
+        print("Speaking an update every tick (--speak).")
+
     if interval is None:
-        one_shot(t, alarms, stages)
+        one_shot(t, alarms, stages, speak_every_tick)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
@@ -417,7 +465,7 @@ def main():
     try:
         while True:
             try:
-                one_shot(t, alarms, stages)
+                one_shot(t, alarms, stages, speak_every_tick)
                 consecutive_failures = 0
                 time.sleep(interval)
             except Exception as e:
