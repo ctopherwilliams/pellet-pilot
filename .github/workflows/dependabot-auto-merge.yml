@@ -21,9 +21,9 @@ jobs:
         uses: dependabot/fetch-metadata@v3
 
       - name: Enable auto-merge
-        # Merges automatically after required status checks succeed.
-        # To exclude major bumps from auto-merge, add to this step:
-        #   if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        # Policy: ALL Dependabot updates auto-merge, including majors, once the
+        # required `audit` check passes. The smoke test in that check is the guard —
+        # a breaking bump fails CI and stays open for a manual fix instead of merging.
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

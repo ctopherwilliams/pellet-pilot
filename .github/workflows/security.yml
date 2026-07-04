@@ -30,10 +30,11 @@ jobs:
           pip install -r requirements.txt
           pip install pip-audit bandit
 
-      - name: Import smoke test
+      - name: Smoke test
+        # Exercises imports, status parsing, and paho MQTT client construction.
         # Catches breaking dependency bumps that pip-audit/bandit can't see
         # (they don't run the code). A bad major bump fails here, not at runtime.
-        run: python -c "import traeger_client, poll, trend"
+        run: python tests/smoke.py
 
       - name: Dependency audit (pip-audit)
         run: pip-audit -r requirements.txt
