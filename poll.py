@@ -6,6 +6,7 @@ Usage:
   ./venv/bin/python poll.py            # one reading, printed + logged
   ./venv/bin/python poll.py --watch 30 # log every 30s until Ctrl-C
   ./venv/bin/python poll.py --watch 30 --speak  # + a spoken update every tick
+  ./venv/bin/python poll.py --watch 30 --coach  # + rule-based hold/wrap advice each tick
   ./venv/bin/python poll.py --watch 30 --speak --stage 165:wrap --stage 205:done \
       --chart cook.html    # set it and forget it: logs, speaks, and keeps a
                             # self-refreshing chart at cook.html up to date --
@@ -25,6 +26,7 @@ import time
 
 import plan
 import probe_names
+import wrap_coach
 from alarms import notify_remote
 from forecast import describe, describe_stages, forecast, forecast_stages
 from traeger_client import Traeger, TraegerError, parse_status
@@ -481,6 +483,32 @@ def print_forecasts(row, stages=None):
                 print(f"  ⏱  P{i} {describe(fc, target, now=now)}")
 
 
+_COACH_ICONS = {"info": "💡", "suggest": "🟡", "urgent": "🔴"}
+
+
+def print_coach(row, stages=None, names=None):
+    """Opt-in (--coach) rule-based advice line per connected probe: hold or
+    wrap, using the same recent-window forecast/stall logic that drives the
+    printed ETA -- see wrap_coach.py. Reuses _eta_samples (print_forecasts
+    must have run first this tick, same requirement as speech_for_probes)."""
+    stages = stages or {}
+    for i in range(1, MAX_PROBES + 1):
+        temp = row.get(f"probe{i}_temp")
+        if not row.get(f"probe{i}_connected") or temp is None:
+            continue
+        samples = _eta_samples.get(i, [])
+        if len(samples) < 2:
+            continue
+        t0 = samples[0][0]
+        mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
+        temps = [v for _, v in samples]
+        tgt = row.get(f"probe{i}_set")
+        rec = wrap_coach.recommend_for_probe(mins, temps, stages.get(i), float(tgt) if tgt else None)
+        label = probe_names.label(i, names)
+        icon = _COACH_ICONS.get(rec["urgency"], "💡")
+        print(f"  {icon} {label}: {rec['advice']}")
+
+
 _STAGE_ACTIONS = {"wrap": "WRAP IT", "done": "DONE — rest it", "rest": "RESTING done"}
 
 
@@ -527,7 +555,8 @@ def check_alarms(row, alarms, names=None):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1, names=None):
+def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1,
+             names=None, coach=False):
     alarms = alarms or {}
     stages = stages or {}
     status = t.poll()
@@ -549,6 +578,8 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
         probes_txt = "  ".join(parts) if parts else "no probes"
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
+        if coach:
+            print_coach(row, stages, names)  # opt-in hold/wrap advice
         if speak_every_tick:
             text = speech_for_probes(row, stages, names)  # full sentence, incl. "Update N" + grill temp
             if text:
@@ -723,9 +754,16 @@ def main():
     if chart_path:
         print(f"Writing a live chart to {chart_path} every tick -- open it once and leave it.")
 
+    # Wrap Coach: --coach or PELLET_PILOT_COACH=1 -- rule-based hold/wrap advice
+    # each tick, printed alongside the forecast line. Off by default.
+    coach = "--coach" in sys.argv or \
+        os.environ.get("PELLET_PILOT_COACH", "").lower() in ("1", "true", "yes")
+    if coach:
+        print("Wrap Coach enabled (--coach).")
+
     if interval is None:
         one_shot(t, alarms, stages, speak_every_tick,
-                 chart_path=chart_path, chart_probe=chart_probe, names=names)
+                 chart_path=chart_path, chart_probe=chart_probe, names=names, coach=coach)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
@@ -734,7 +772,7 @@ def main():
         while True:
             try:
                 one_shot(t, alarms, stages, speak_every_tick,
-                         chart_path=chart_path, chart_probe=chart_probe, names=names)
+                         chart_path=chart_path, chart_probe=chart_probe, names=names, coach=coach)
                 consecutive_failures = 0
                 time.sleep(interval)
             except Exception as e:

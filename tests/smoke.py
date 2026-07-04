@@ -8,7 +8,9 @@ refactor that breaks any of this fails here (branch protection) instead of at
 runtime. No network required (SSRF checks use IP literals; auth flows use
 mocked HTTP responses).
 """
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -35,6 +37,7 @@ import probe_names  # noqa: E402
 import report  # noqa: E402
 import traeger_client as tc  # noqa: E402
 import trend  # noqa: E402,F401
+import wrap_coach  # noqa: E402
 
 
 def _doc(temps=((150, 203),), grill=225):
@@ -926,6 +929,83 @@ def test_stall_minutes():
 
     climbing = _rows(dt.datetime(2026, 7, 4, 9, 0), 6, p1=160, p1_set=None)  # 160..165, still climbing
     assert report._stall_minutes(climbing, 1) == 0, "a genuine climb shouldn't count as stalled"
+
+
+def test_wrap_coach_current_stall_streak_not_total():
+    # A climb that only later flattens should report the CURRENT streak's
+    # length, not the whole cook's elapsed time.
+    mins = list(range(0, 40, 2))              # 20 readings, 2 min apart
+    temps = [130.0 + 2 * i for i in range(10)] + [160.0] * 10  # climb, then flat at 160 (in-band)
+    stall_min = wrap_coach.current_stall_minutes(mins, temps)
+    assert 0 < stall_min <= 20, stall_min      # only the trailing ~18 min flat stretch, not 38
+
+
+def test_wrap_coach_recommend_categories():
+    mins = list(range(20))
+    assert wrap_coach.recommend(mins[:1], [140.0])["status"] == "insufficient"
+
+    # rate 1 deg/min, still 46 min out at index 19 (159 -> target 205) -> no rush
+    climbing = [140.0 + i for i in range(20)]
+    rec = wrap_coach.recommend(mins, climbing, target=205)
+    assert rec["status"] == "on_track" and rec["urgency"] == "info", rec
+
+    # rate 1 deg/min, only 1 min out (204 -> target 205) -> time to plan the rest
+    near_done = [185.0 + i for i in range(20)]
+    rec = wrap_coach.recommend(mins, near_done, target=205)
+    assert rec["status"] == "on_track" and rec["urgency"] == "suggest", rec
+    assert "rest time" in rec["advice"], rec
+
+    done = wrap_coach.recommend(mins, [200.0 + i for i in range(20)], target=205)
+    assert done["status"] == "done" and "pull it" in done["advice"], done
+
+    flat_170 = wrap_coach.recommend(mins, [170.0] * 20, target=205)
+    assert flat_170["status"] == "stalled" and flat_170["urgency"] == "suggest", flat_170
+
+    flat_100 = wrap_coach.recommend(mins, [100.0] * 20, target=205)
+    assert flat_100["status"] == "not_rising" and flat_100["urgency"] == "suggest", flat_100
+
+
+def test_wrap_coach_long_stall_and_wrapped_escalation():
+    long_stall_mins = list(range(0, 200, 2))
+    long_stall_temps = [160.0] * len(long_stall_mins)
+
+    unwrapped = wrap_coach.recommend(long_stall_mins, long_stall_temps, target=205, wrapped=False)
+    assert unwrapped["urgency"] == "urgent" and "Wrap now" in unwrapped["advice"], unwrapped
+
+    wrapped_long = wrap_coach.recommend(long_stall_mins, long_stall_temps, target=205, wrapped=True)
+    assert wrapped_long["urgency"] == "urgent" and "bumping the grill temp" in wrapped_long["advice"], wrapped_long
+
+    short_stall_mins = list(range(0, 20, 2))
+    short_stall_temps = [160.0] * len(short_stall_mins)
+    wrapped_short = wrap_coach.recommend(short_stall_mins, short_stall_temps, target=205, wrapped=True)
+    assert wrapped_short["urgency"] == "info", wrapped_short
+
+
+def test_wrap_coach_recommend_for_probe_auto_detects_wrapped():
+    # Past the "wrap" stage temp and stalled -> auto-detected as wrapped,
+    # so advice should NOT tell you to wrap something you already wrapped.
+    mins = list(range(0, 200, 2))
+    temps = [170.0] * len(mins)  # past the 165 wrap stage, stalled
+    stages_for_probe = [(165.0, "wrap"), (205.0, "done")]
+    rec = wrap_coach.recommend_for_probe(mins, temps, stages_for_probe)
+    assert "already wrapped" in rec["advice"].lower(), rec
+
+    not_yet_wrapped_temps = [160.0] * len(mins)  # below 165 -> not wrapped yet
+    rec2 = wrap_coach.recommend_for_probe(mins, not_yet_wrapped_temps, stages_for_probe)
+    assert "wrap now" in rec2["advice"].lower(), rec2
+
+
+def test_print_coach_smoke():
+    poll._eta_samples.clear()
+    t0 = dt.datetime(2026, 7, 4, 12, 0, 0)
+    t1 = t0 + dt.timedelta(minutes=10)
+    poll._eta_samples[1] = [(t0, 150.0), (t1, 160.0)]
+    row = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        poll.print_coach(row, {}, {1: "pork butt"})
+    out = buf.getvalue()
+    assert "pork butt" in out, out
 
 
 def test_backoff_seconds():
