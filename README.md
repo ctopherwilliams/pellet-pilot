@@ -170,6 +170,11 @@ done:     ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 > `(target − current) ÷ rate` gives the minutes remaining. Below ~0.05°/min it
 > reports *stalled* (in the plateau band) or *not rising* rather than a bogus ETA.
 
+**See it as a chart:** `plot.py --probe 1` renders the whole cook as an SVG — it
+auto-detects the pull/wrap (from the probe-out temperature spike), draws your stage
+lines, and adds a **dashed projection to the finish time**. `--html` makes it
+interactive (hover any point). This is the graph version of the prediction above.
+
 ### Multi-stage cooks (wrap, then done)
 
 Big cuts have milestones, not one target: pull-to-**wrap** at 165°, then pull-to-rest
@@ -277,15 +282,21 @@ flowchart LR
 
 ### Controller status codes
 
-| Code | Meaning | | Code | Meaning |
-|---|---|---|---|---|
-| 99 | Running¹ | | 5 | Preheating |
-| 9 | Shutting down | | 4 | Igniting |
-| 8 | Cool-down | | 3 | Idle |
-| 7 | Custom cook | | 2 | Sleeping |
-| 6 | Manual cook | | | |
+The `[state]` shown in `poll.py` output comes straight from the grill. Here's what each code means, from "off" to "actively cooking":
 
-<sub>¹ On newer controllers `99` is the normal running state; on older D2 controllers it meant "offline." Pellet Pilot trusts live connection + temps over the raw code.</sub>
+| Code | Status | What's happening |
+|---|---|---|
+| 2 | Sleeping | Powered on, screen off |
+| 3 | Idle | Powered on, screen on, not cooking |
+| 4 | Igniting | Startup — lighting the fire pot |
+| 5 | Preheating | Warming up to the set temperature |
+| 6 | Manual cook | Actively cooking, manual mode |
+| 7 | Custom cook | Actively cooking, a saved custom program |
+| 8 | Cool-down | Finishing up, fan running to cool down |
+| 9 | Shutting down | Cool-down complete, powering off |
+| 99 | Running¹ | Actively cooking (newer Timberline-class controllers) |
+
+<sub>¹ On older D2 controllers, code 99 meant "offline" instead. Pellet Pilot trusts live connection + temps over the raw code, so it won't mislabel an active cook as offline.</sub>
 
 ---
 
@@ -309,6 +320,7 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 
 # Chart a cook — SVG (no deps), interactive HTML, or PNG (matplotlib)
 ./venv/bin/python plot.py --out cook.svg
+./venv/bin/python plot.py --probe 1 --out meat.svg # meat-probe forecast chart (below)
 ./venv/bin/python plot.py --html --out cook.html
 ./venv/bin/python plot.py --png --out cook.png     # pip install -r requirements-plot.txt
 
@@ -337,13 +349,21 @@ auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECU
 
 ## 🗺 Roadmap
 
-- [x] `history.py` — browse & re-plot past cooks, per-session summaries
-- [x] Multi-probe support in the trend view
-- [x] PNG/interactive plot export
-- [x] Pushover / ntfy / webhook alarm targets
-- [x] Grafana-friendly export
-- [x] Issue autopilot — triage issues, draft a fix, open a human-reviewed PR (label-gated, untrusted issue text, never auto-merged)
-- [x] Multi-stage cooks — per-probe wrap/done stages with next-stage prediction & labeled alarms
+Pellet Pilot already covers the full loop end to end: multi-probe live tracking,
+stage-aware predictions with spoken updates, local + remote alarms, cook
+history, charts with projected finish times, and Grafana export. Here's where
+it can go next:
+
+- [ ] **Stage presets** (`--preset brisket`, `pork-shoulder`, `chicken`, ...) — skip typing `--stage` every cook
+- [ ] **`history.py compare A B`** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
+- [ ] **Shareable post-cook report** — one-page chart + stage times + stats card, for exporting or sharing a finished cook
+- [ ] **Live local dashboard** — auto-refreshing HTML forecast chart on `127.0.0.1` (loopback-only, same pattern as `export.py --serve`), for a leave-it-open browser tab during a cook
+- [ ] **Interactive Cognito MFA/challenge support at login** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
+- [ ] **Per-grill filtering** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
+- [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick, mention only rate-of-change, or add quiet hours
+- [ ] **Packaged install** (`pipx install` or a single-file build) — lower the barrier below "clone + venv" for non-developers
+
+Have an idea? Open an issue — with the `autofix` label, this repo can draft its own fix.
 
 ---
 
