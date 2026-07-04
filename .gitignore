@@ -1,0 +1,19 @@
+# secrets & local state — never commit
+.env
+.bw_session
+*.session
+
+# personal cook data & device identifiers
+cook_log.csv
+*.csv
+watch.out
+nohup.out
+*.out
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# os
+.DS_Store
