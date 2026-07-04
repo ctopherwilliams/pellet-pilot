@@ -17,6 +17,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLAN_FILE = os.path.join(HERE, ".cook_plan.json")
+_MAX_PLAN_FILE_BYTES = 256 * 1024  # a real plan is a few dozen bytes; same cap as the MQTT payload guard
 
 
 def parse_stage(spec):
@@ -60,6 +61,13 @@ def save_plan(plan, path=PLAN_FILE):
 def load_plan(path=PLAN_FILE):
     if not os.path.exists(path):
         return {}
+    size = os.path.getsize(path)
+    if size > _MAX_PLAN_FILE_BYTES:
+        raise ValueError(
+            f"{path} is {size} bytes, over the {_MAX_PLAN_FILE_BYTES}-byte sanity "
+            "cap for a cook plan; refusing to load. If this file is legitimately "
+            "this large something's wrong -- delete it and re-run with --stage."
+        )
     with open(path) as f:
         raw = json.load(f)
     return {int(p): [(t, l) for t, l in s] for p, s in raw.items()}

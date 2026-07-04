@@ -29,6 +29,7 @@ import requests
 
 # Cap MQTT payloads to avoid memory exhaustion from a poisoned broker message.
 _MAX_MQTT_PAYLOAD = 256 * 1024
+_TOPIC_PREFIX = "prod/thing/update/"
 
 # Traeger thingNames observed in practice are short hex/alnum device ids (e.g.
 # "AB12CD34EF56"). Enforce that shape before using the value in a URL path or
@@ -189,7 +190,7 @@ class Traeger:
         # paho-mqtt v2 callback signatures.
         def on_connect(c, u, flags, reason_code, properties):
             for g in self.grills:
-                c.subscribe((f"prod/thing/update/{g['thingName']}", 1))
+                c.subscribe((f"{_TOPIC_PREFIX}{g['thingName']}", 1))
 
         def on_subscribe(c, u, mid, reason_codes, properties):
             for g in self.grills:
@@ -199,9 +200,15 @@ class Traeger:
                     pass  # retained message may still arrive
 
         def on_message(c, u, msg):
+            # Only ever expect topics we subscribed to on a trusted AWS IoT
+            # broker, but verify the prefix before slicing rather than
+            # assuming it -- a mismatched topic is silently ignored instead
+            # of producing a garbage dict key.
+            if not msg.topic.startswith(_TOPIC_PREFIX):
+                return
             if len(msg.payload) > _MAX_MQTT_PAYLOAD:
                 return
-            tn = msg.topic[len("prod/thing/update/"):]
+            tn = msg.topic[len(_TOPIC_PREFIX):]
             try:
                 result[tn] = json.loads(msg.payload)
             except (json.JSONDecodeError, UnicodeDecodeError):

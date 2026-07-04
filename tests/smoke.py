@@ -9,8 +9,10 @@ runtime. No network required (SSRF checks use IP literals; auth flows use
 mocked HTTP responses).
 """
 import datetime as dt
+import json
 import os
 import sys
+import tempfile
 import xml.dom.minidom as minidom
 
 # Make the repo root importable regardless of how this file is invoked.
@@ -180,6 +182,128 @@ def test_ssrf_guard():
             raise AssertionError(f"should have blocked {bad}")
         except alarms.UnsafeURL:
             pass
+
+
+def test_notify_remote_sanitizes_control_chars():
+    # RT-NEW-1: control characters (incl. newlines) must be stripped from
+    # title/message before any provider is called -- ntfy puts `title`
+    # straight into an HTTP header, so this closes a header-injection primitive.
+    captured = {}
+
+    def fake_pushover(title, message):
+        captured["title"], captured["message"] = title, message
+        return True
+
+    orig = alarms.pushover
+    alarms.pushover = fake_pushover
+    try:
+        alarms.notify_remote("Ti\ntle\r", "Mess\r\nage\x07here")
+        assert "\n" not in captured["title"] and "\r" not in captured["title"], captured
+        assert "\n" not in captured["message"] and "\x07" not in captured["message"], captured
+    finally:
+        alarms.pushover = orig
+
+
+def test_stage_alarm_sanitizes_end_to_end():
+    # Integration: poll.check_stage_alarms's real (unmocked) notify_remote is
+    # alarms.notify_remote itself -- confirm a crafted stage label is
+    # sanitized by the time it reaches a provider, through the real wiring.
+    poll._fired.clear()
+    captured = {}
+
+    def fake_pushover(title, message):
+        captured["message"] = message
+        return True
+
+    orig_notify, poll.notify = poll.notify, lambda t, m: None  # skip real osascript/say
+    orig_pushover, alarms.pushover = alarms.pushover, fake_pushover
+    try:
+        poll.check_stage_alarms({"probe1_temp": 166}, {1: [(165.0, "wrap\ninjected")]})
+    finally:
+        poll.notify, alarms.pushover = orig_notify, orig_pushover
+    assert "message" in captured, "notify_remote was not reached"
+    assert "\n" not in captured["message"], captured
+
+
+def test_plan_file_size_cap():
+    # RT-NEW-2: .cook_plan.json is capped on load -- a real plan is tiny, so an
+    # oversized file (corrupted or otherwise) is refused rather than silently
+    # parsed.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"1": [[165.0, "wrap"]]}, f)
+        small_path = f.name
+    try:
+        assert plan.load_plan(small_path) == {1: [(165.0, "wrap")]}
+    finally:
+        os.unlink(small_path)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write(json.dumps({"1": [[float(i), "x"] for i in range(50_000)]}))
+        big_path = f.name
+    try:
+        try:
+            plan.load_plan(big_path)
+            raise AssertionError("should have refused an oversized plan file")
+        except ValueError:
+            pass
+    finally:
+        os.unlink(big_path)
+
+
+def test_mqtt_topic_prefix_verified():
+    # RT-NEW-3: on_message must verify the "prod/thing/update/" prefix before
+    # slicing, ignoring a message on any other topic instead of producing a
+    # garbage dict key.
+    class _Msg:
+        pass
+
+    class _FakeMQTTClient:
+        def __init__(self, *a, **k):
+            self.on_connect = self.on_subscribe = self.on_message = None
+
+        def tls_set_context(self, ctx):
+            pass
+
+        def ws_set_options(self, **k):
+            pass
+
+        def subscribe(self, *a, **k):
+            pass
+
+        def connect(self, *a, **k):
+            pass
+
+        def loop_start(self):
+            self.on_connect(self, None, None, 0, None)
+            self.on_subscribe(self, None, None, None, None)
+            bad = _Msg()
+            bad.topic, bad.payload = "some/other/topic", b'{"status":{}}'
+            good = _Msg()
+            good.topic, good.payload = "prod/thing/update/AB12CD34EF56", b'{"status":{}}'
+            self.on_message(self, None, bad)   # must be ignored, not crash
+            self.on_message(self, None, good)  # must be recorded
+
+        def loop_stop(self):
+            pass
+
+        def disconnect(self):
+            pass
+
+    orig_client_cls, tc.mqtt.Client = tc.mqtt.Client, _FakeMQTTClient
+    orig_signed_url = tc.Traeger._mqtt_signed_url
+    tc.Traeger._mqtt_signed_url = lambda self: "wss://example.com/mqtt?x=1"
+    orig_post = tc.requests.post  # avoid a real network call from _refresh_command
+    tc.requests.post = lambda *a, **k: None
+    try:
+        client = tc.Traeger("u", "p")
+        client.token = "t"
+        client.grills = [{"thingName": "AB12CD34EF56"}]
+        result = client.poll(timeout=1)
+        assert set(result.keys()) == {"AB12CD34EF56"}, result
+    finally:
+        tc.mqtt.Client = orig_client_cls
+        tc.Traeger._mqtt_signed_url = orig_signed_url
+        tc.requests.post = orig_post
 
 
 def test_dns_pin_redirects_connection():
