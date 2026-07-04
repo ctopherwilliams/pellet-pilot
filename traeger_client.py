@@ -18,6 +18,7 @@ Only reads status here (no start/stop/set-temp) -- monitoring, not control.
 
 import json
 import os
+import re
 import ssl
 import threading
 import time
@@ -28,6 +29,12 @@ import requests
 
 # Cap MQTT payloads to avoid memory exhaustion from a poisoned broker message.
 _MAX_MQTT_PAYLOAD = 256 * 1024
+
+# Traeger thingNames observed in practice are short hex/alnum device ids (e.g.
+# "AB12CD34EF56"). Enforce that shape before using the value in a URL path or
+# MQTT topic -- MQTT wildcard characters ("+", "#") or path separators in an
+# unexpected thingName could otherwise widen a subscription or break a request.
+_THING_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CLIENT_ID = "4id473dsrcq4kevlgrikukqn2a"  # Traeger app Cognito client (rotated; old: 2fuohjtqv1e63dckp5v84rau0j)
 COGNITO_URL = "https://cognito-idp.us-west-2.amazonaws.com/"
@@ -67,6 +74,7 @@ class Traeger:
         self.username = username
         self.password = password
         self.token = None
+        self.refresh_token = None
         self.grills = []          # list of {"thingName": ...}
         self._status = {}         # thingName -> full thing document
 
@@ -97,14 +105,52 @@ class Traeger:
                 f"Cognito login failed ({r.status_code}). "
                 "Check TRAEGER_USERNAME / TRAEGER_PASSWORD."
             )
-        self.token = r.json()["AuthenticationResult"]["IdToken"]
+        auth = r.json()["AuthenticationResult"]
+        self.token = auth["IdToken"]
+        self.refresh_token = auth.get("RefreshToken", self.refresh_token)
         self.clear_credentials()
+        return self.token
+
+    def refresh(self):
+        """Renew the IdToken using the stored refresh token -- no password needed.
+
+        Long --watch cooks outlive the ~1h IdToken; this is the correct way to
+        renew it since login() wipes self.password immediately after use. Falls
+        back to a full login() (which needs the password re-supplied by the
+        caller) only if the refresh token itself is rejected.
+        """
+        if not self.refresh_token:
+            raise TraegerError("No refresh token available; call login() first.")
+        r = requests.post(
+            COGNITO_URL,
+            headers={
+                "Content-Type": "application/x-amz-json-1.1",
+                "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+            },
+            json={
+                "ClientMetadata": {},
+                "AuthParameters": {"REFRESH_TOKEN": self.refresh_token},
+                "AuthFlow": "REFRESH_TOKEN_AUTH",
+                "ClientId": CLIENT_ID,
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            raise TraegerError(f"Token refresh failed ({r.status_code}).")
+        auth = r.json()["AuthenticationResult"]
+        self.token = auth["IdToken"]
+        self.refresh_token = auth.get("RefreshToken", self.refresh_token)
         return self.token
 
     def load_grills(self):
         r = requests.get(f"{API}/users/self", headers={"authorization": self.token}, timeout=30)
         r.raise_for_status()
-        self.grills = r.json().get("things", [])
+        things = r.json().get("things", [])
+        for g in things:
+            name = g.get("thingName", "")
+            if not _THING_NAME_RE.match(name):
+                raise TraegerError(f"Unexpected grill identifier from the API; refusing to use it: {name!r}")
+        self.grills = things
         if not self.grills:
             raise TraegerError("No grills found on this Traeger account.")
         return self.grills

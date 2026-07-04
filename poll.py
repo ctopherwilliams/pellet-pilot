@@ -13,6 +13,7 @@ Credentials come from environment or a local .env file (see .env.example):
 import csv
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
 import time
@@ -20,11 +21,21 @@ import time
 import plan
 from alarms import notify_remote
 from forecast import describe, describe_stages, forecast, forecast_stages
-from traeger_client import Traeger, parse_status
+from traeger_client import Traeger, TraegerError, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BW_SESSION_FILE = os.path.join(HERE, ".bw_session")
+_MAX_BACKOFF_S = 600  # cap re-auth retry backoff at 10 minutes
+
+
+def _backoff_seconds(interval, consecutive_failures):
+    """Exponential backoff after repeated re-auth failures, capped at _MAX_BACKOFF_S.
+
+    Keeps a persistently-failing --watch loop from hammering Cognito with an
+    auth attempt every `interval` seconds indefinitely.
+    """
+    return min(interval * (2 ** consecutive_failures), _MAX_BACKOFF_S)
 
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
@@ -53,8 +64,18 @@ def decode_status(code, connected, grill_temp):
     return name
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _applescript_escape(text):
-    """Escape user-influenced strings before embedding in AppleScript."""
+    """Escape user-influenced strings before embedding in AppleScript.
+
+    Strips control characters (including newlines, which AppleScript string
+    literals can't contain) before escaping backslashes/quotes, so a crafted
+    stage label (--stage, PROBE_STAGES, .cook_plan.json) can't break out of
+    the quoted string or corrupt the script passed to osascript.
+    """
+    text = _CONTROL_CHARS.sub(" ", text).replace("\n", " ").replace("\r", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
@@ -125,9 +146,13 @@ def bitwarden_password(item):
     if not sess:
         return None
     try:
+        # Pass the session key via BW_SESSION (which `bw` reads automatically),
+        # not --session -- a CLI arg is visible to other local users/processes
+        # via `ps`/`/proc/<pid>/cmdline` for the life of the subprocess.
         out = subprocess.run(
-            ["bw", "get", "password", item, "--session", sess],
+            ["bw", "get", "password", item],
             capture_output=True, text=True,
+            env={**os.environ, "BW_SESSION": sess},
         )
     except FileNotFoundError:
         return None  # bw CLI not installed
@@ -269,24 +294,61 @@ def one_shot(t, alarms=None, stages=None):
             check_alarms(row, active)
 
 
+def resolve_password(user):
+    """Resolve the Traeger password: env override, then Bitwarden, then Keychain.
+
+    Pops TRAEGER_PASSWORD out of the process environment as soon as it's read,
+    so it isn't inherited by every child subprocess spawned afterward (bw,
+    security, osascript, say) for the rest of the run. Returns (password, source)
+    or (None, None) if nothing is configured.
+    """
+    pw = os.environ.pop("TRAEGER_PASSWORD", None)
+    if pw:
+        return pw, "env"
+    pw = bitwarden_password(os.environ.get("TRAEGER_BW_ITEM"))
+    if pw:
+        return pw, "bitwarden"
+    pw = keychain_password(user)
+    if pw:
+        return pw, "keychain"
+    return None, None
+
+
+def reauth(t, user):
+    """Renew the session for a long --watch cook.
+
+    Tries the refresh token first (no password required -- login() already
+    wiped it from memory). Falls back to a full re-login only if the refresh
+    token itself is rejected, which needs the password re-resolved. Note: if
+    the password's source was the plain env var, resolve_password() already
+    consumed it at startup (see its docstring), so that fallback path won't
+    have anything to re-resolve for env-only setups -- use Bitwarden or
+    Keychain if you want a --watch cook to survive a refresh-token failure.
+    """
+    try:
+        t.refresh()
+        t.load_grills()
+        return "refresh token"
+    except Exception as refresh_err:
+        pw, _ = resolve_password(user)
+        if not pw:
+            raise TraegerError(
+                f"Refresh failed ({refresh_err}) and no password available for a "
+                "full re-login."
+            ) from refresh_err
+        t.password = pw
+        t.login()
+        t.load_grills()
+        return "full login"
+
+
 def main():
     load_env()
     user = os.environ.get("TRAEGER_USERNAME")
     if not user:
         sys.exit("Missing TRAEGER_USERNAME. Set it in .env.")
 
-    # Password resolution order:
-    #   1. TRAEGER_PASSWORD env (explicit override)
-    #   2. Bitwarden vault item (TRAEGER_BW_ITEM), via an unlocked bw session
-    #   3. macOS Keychain
-    pw = os.environ.get("TRAEGER_PASSWORD")
-    src = "env"
-    if not pw:
-        pw = bitwarden_password(os.environ.get("TRAEGER_BW_ITEM"))
-        src = "bitwarden"
-    if not pw:
-        pw = keychain_password(user)
-        src = "keychain"
+    pw, src = resolve_password(user)
     if not pw:
         sys.exit(
             "No password found. Options:\n"
@@ -351,20 +413,28 @@ def main():
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
+    consecutive_failures = 0
     try:
         while True:
             try:
                 one_shot(t, alarms, stages)
+                consecutive_failures = 0
+                time.sleep(interval)
             except Exception as e:
                 print(f"  poll error (will retry): {e}")
                 # token/signed-URL likely expired (~1h) -- re-auth for long cooks
                 try:
-                    t.login()
-                    t.load_grills()
-                    print("  re-authenticated")
+                    how = reauth(t, user)
+                    print(f"  re-authenticated ({how})")
+                    consecutive_failures = 0
+                    time.sleep(interval)
                 except Exception as e2:
+                    consecutive_failures += 1
+                    backoff = _backoff_seconds(interval, consecutive_failures)
                     print(f"  re-auth failed: {e2}")
-            time.sleep(interval)
+                    print(f"  backing off {backoff:.0f}s (attempt {consecutive_failures}) "
+                          "before retrying, to avoid hammering Cognito")
+                    time.sleep(backoff)
     except KeyboardInterrupt:
         print("\nStopped.")
 

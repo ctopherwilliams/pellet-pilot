@@ -6,12 +6,13 @@ Pellet Pilot handles credentials for your Traeger grill account. This document d
 
 | Asset | Risk | Mitigation |
 |-------|------|------------|
-| Traeger account password | Credential theft → account/grill access | Never committed; prefer Keychain/Bitwarden; cleared from memory after Cognito login |
-| Cognito IdToken (~1h) | Session hijack → read grill status, issue command `90` (status refresh only) | Held in memory only; auto re-auth on expiry |
-| Bitwarden session (`.bw_session`) | Full vault access | Gitignored; warn if file mode ≠ `600` |
+| Traeger account password | Credential theft → account/grill access | Never committed; prefer Keychain/Bitwarden; cleared from memory after Cognito login; popped from `os.environ` once read so it isn't inherited by child subprocesses |
+| Cognito IdToken (~1h) | Session hijack → read grill status, issue command `90` (status refresh only) | Held in memory only; renewed via **refresh token** on expiry (no password re-sent) during `--watch`, with backoff if renewal keeps failing |
+| Bitwarden session (`.bw_session`) | Full vault access | Gitignored; warn if file mode ≠ `600`; session key passed to `bw` via `BW_SESSION` env, not `--session` argv (avoids exposure via `ps`/procfs) |
 | Cook logs (`cook_log.csv`) | Privacy (temps, timing, thing names) | Gitignored |
-| Local machine | AppleScript injection via alarm text | User-influenced strings escaped before `osascript` |
+| Local machine | AppleScript injection via alarm text | User-influenced strings stripped of control characters (incl. newlines) and escaped before `osascript` |
 | Network path | MITM on MQTT WSS | TLS verification **on by default**; `TRAEGER_INSECURE_TLS=1` only as last resort |
+| Grill identifier (`thingName`, from the Traeger API) | Path/MQTT-topic injection if the upstream API ever returned an unexpected value | Validated against an alphanumeric pattern before use in any URL path or MQTT topic |
 
 **Blast radius:** This tool is **read-only** against the grill — it polls status and sends command `90` (force status publish). It does **not** expose start/stop/set-temp. A stolen token cannot remotely ignite or change targets through this client.
 
@@ -25,6 +26,8 @@ Optional probe alarms can POST to Pushover, ntfy, or a generic webhook. Controls
 - **SSRF guard** on the generic webhook (and ntfy server): the host is resolved and
   the request is refused if any resolved address is private, loopback, link-local
   (incl. cloud metadata `169.254.169.254`), reserved, multicast, or unspecified.
+  The validated IP is then **pinned for the actual connection**, so a DNS answer
+  that changes between the check and the request (a rebind) can't bypass the guard.
 - **No redirects** — a `3xx` cannot bounce the request to an internal host.
 - **Config via env only** (`PUSHOVER_*`, `NTFY_TOPIC`, `ALARM_WEBHOOK_URL`); tokens are never logged.
 - `ALARM_ALLOW_PRIVATE=1` relaxes the private-IP check for self-hosted LAN targets — opt-in, and it lowers SSRF protection.
@@ -67,6 +70,7 @@ The first source that yields a value wins. The program never prompts for or echo
 
 - **MFA:** Accounts with Cognito MFA enabled may fail `USER_PASSWORD_AUTH`. There is no interactive MFA flow.
 - **Client id rotation:** Traeger may rotate the mobile app Cognito client id; monitor upstream HA integrations if auth suddenly fails.
+- **Refresh-token fallback for `env`-sourced passwords:** `--watch` renews its session via refresh token (no password needed) and only falls back to a full re-login if that's ever rejected. If your password source is a plain `TRAEGER_PASSWORD` env var, it's popped from the environment right after the first login (see the table above), so that fallback has nothing to re-resolve for an `env`-only setup. This is expected to be rare in practice — Cognito refresh tokens comfortably outlive a single cook — but if you want a `--watch` cook to survive a refresh-token failure too, use Bitwarden or Keychain instead of `.env`/`TRAEGER_PASSWORD`.
 
 ## Reporting a vulnerability
 

@@ -1,4 +1,5 @@
 # Pinned for reproducible installs and supply-chain stability.
 requests==2.34.2
+urllib3==2.7.0    # pinned explicitly: alarms.py imports its connection internals for SSRF DNS-pinning
 paho-mqtt==2.1.0
 numpy==2.5.1
