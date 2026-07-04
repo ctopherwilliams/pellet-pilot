@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import xml.dom.minidom as minidom
 
 # Make the repo root importable regardless of how this file is invoked.
@@ -106,6 +107,78 @@ def test_plot_svg():
     svg = plot.render_svg(_rows(dt.datetime(2026, 7, 4, 9, 0), 12, p2=100))
     minidom.parseString(svg)  # well-formed XML
     assert svg.count("<polyline") >= 3, "grill + 2 probes expected"
+
+
+def test_html_wrap_refresh_tag():
+    # Default (no refresh) must be unchanged -- no meta-refresh tag at all.
+    plain = plot.html_wrap("<svg></svg>", "t")
+    assert "http-equiv" not in plain, plain
+    # "Set it and forget it": refresh=N adds a self-reloading meta tag.
+    refreshing = plot.html_wrap("<svg></svg>", "t", refresh=30)
+    assert '<meta http-equiv="refresh" content="30">' in refreshing, refreshing
+
+
+def test_write_chart_self_refreshing():
+    # The "set it and forget it" chart: written atomically, self-refreshing,
+    # valid SVG inside, stage lines present.
+    rows = _rows(dt.datetime(2026, 7, 4, 9, 0), 15, p1=140, p1_set=205)
+    orig_load_rows = plot.load_rows
+    plot.load_rows = lambda: rows
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "cook.html")
+            ok = plot.write_chart(path, 1, {1: [(165.0, "wrap"), (205.0, "done")]}, refresh=15)
+            assert ok is True
+            content = open(path).read()
+            assert '<meta http-equiv="refresh" content="15">' in content, content
+            svg_start = content.index("<svg")
+            minidom.parseString(content[svg_start:content.index("</svg>") + 6])
+            assert "wrap 165" in content and "done 205" in content, content
+            assert not os.path.exists(path + ".tmp"), "temp file must be cleaned up (atomic rename)"
+    finally:
+        plot.load_rows = orig_load_rows
+
+
+def test_write_chart_insufficient_data_does_not_crash():
+    # render_forecast_svg() used to sys.exit() on insufficient data -- fatal
+    # if called every --watch tick. write_chart() must degrade to False instead.
+    orig_load_rows = plot.load_rows
+    plot.load_rows = lambda: _rows(dt.datetime(2026, 7, 4, 9, 0), 1)  # only 1 row
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "cook.html")
+            ok = plot.write_chart(path, 1, {})
+            assert ok is False
+            assert not os.path.exists(path)
+    finally:
+        plot.load_rows = orig_load_rows
+
+
+def test_one_shot_chart_write_failure_does_not_crash_tick():
+    # A chart-write error must never interrupt the cook log -- best-effort,
+    # same philosophy as remote-alarm delivery.
+    class _FakeTraeger:
+        def poll(self):
+            return {"g": {"status": {
+                "grill": 250, "set": 250, "ambient": 70, "system_status": 6,
+                "connected": True, "units": 1,
+                "acc": [{"type": "probe", "con": 1, "uuid": "p1",
+                         "probe": {"get_temp": 168, "set_temp": 205, "alarm_fired": 0}}],
+            }}}
+
+    def _boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    fake_plot = types.SimpleNamespace(write_chart=_boom)
+    orig_module = sys.modules.get("plot")
+    sys.modules["plot"] = fake_plot  # poll.one_shot() does a local `import plot`
+    orig_append, poll.append = poll.append, lambda row: None
+    poll._eta_samples.clear()
+    try:
+        poll.one_shot(_FakeTraeger(), chart_path="cook.html")  # must not raise
+    finally:
+        sys.modules["plot"] = orig_module
+        poll.append = orig_append
 
 
 def test_export_influx():

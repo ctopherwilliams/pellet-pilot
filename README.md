@@ -119,7 +119,29 @@ If you have [Claude Code](https://claude.com/claude-code), this gets much nicer 
 > - *"Check on it every 20 minutes and tell me when it hits the wrap temp."*
 > - *"Show me a chart of this cook."* · *"How did my last brisket turn out?"*
 
-Claude Code runs the tools for you, reads the numbers, explains them in plain English, and can even **check back on a schedule and ping you**. It's the difference between reading `+0.21°/min` yourself and being told *"it's stalling at 152°, ~90 min from done — wrap it if you're in a hurry."* This whole project was built and babysat exactly this way.
+Claude Code runs the tools for you, reads the numbers, explains them in plain English, and can even **check back on a schedule and ping you** — the narrated version of "set it and forget it" below: ask it to watch the cook and it loops on its own, announcing ticks and pulling up a chart whenever you ask, without you touching a terminal again until it's done.
+
+---
+
+## 🎛 Set it and forget it
+
+This is the point of the whole project: **one command, then walk away.**
+
+```bash
+./venv/bin/python poll.py --watch 30 --speak \
+    --stage 165:wrap --stage 205:done \
+    --chart cook.html
+```
+
+That single line gives you three things running continuously, unattended, for the whole cook:
+
+- **Logs** every reading to `cook_log.csv` (`--watch 30`).
+- **Speaks** a short update out loud every tick — temp, target, ETA — via `--speak`, not just when an alarm fires.
+- **Keeps a chart current** at `cook.html` via `--chart` — open that file once in a browser and leave the tab open. It's a plain file, **no server, no port, nothing to secure** — it just quietly reloads itself every 30 seconds (a `<meta refresh>` tag) and always shows the latest pull/wrap markers and projected finish time.
+
+Nothing here needs supervision: a chart-write hiccup or a momentary network blip never takes down the loop (best-effort, same philosophy as the alarms), and the ~1 hour auth token renews itself in the background — more on that in the prediction section just below. Add `--alarm`/`PUSHOVER_*`/`NTFY_TOPIC` if you also want a ping on your phone when a stage hits.
+
+**In Claude Code, the same idea, narrated:** *"Start my cook — wrap at 165, done at 205, speak every tick, and keep a chart open."* Claude Code runs `--watch --speak --chart` for you, reads its own output, and checks back on a schedule with a plain-English tick instead of raw numbers — same "walk away" experience, spoken instead of read off a screen.
 
 ---
 
@@ -324,6 +346,9 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 ./venv/bin/python plot.py --html --out cook.html
 ./venv/bin/python plot.py --png --out cook.png     # pip install -r requirements-plot.txt
 
+# --chart keeps that same chart current automatically during --watch, no re-run needed
+./venv/bin/python poll.py --watch 30 --chart cook.html   # see "Set it and forget it" above
+
 # Grafana-friendly export (local files) or a localhost Prometheus endpoint
 ./venv/bin/python export.py --format influx --out cook.lp
 ./venv/bin/python export.py --serve                # http://127.0.0.1:9109/metrics
@@ -357,7 +382,6 @@ it can go next:
 - [ ] **Stage presets** (`--preset brisket`, `pork-shoulder`, `chicken`, ...) — skip typing `--stage` every cook
 - [ ] **`history.py compare A B`** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
 - [ ] **Shareable post-cook report** — one-page chart + stage times + stats card, for exporting or sharing a finished cook
-- [ ] **Live local dashboard** — auto-refreshing HTML forecast chart on `127.0.0.1` (loopback-only, same pattern as `export.py --serve`), for a leave-it-open browser tab during a cook
 - [ ] **Interactive Cognito MFA/challenge support at login** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
 - [ ] **Per-grill filtering** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
 - [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick, mention only rate-of-change, or add quiet hours
