@@ -599,6 +599,7 @@ def test_speak_every_tick():
         poll.one_shot(_FakeTraeger(), speak_every_tick=True)
         assert len(spoken) == 1, spoken
         assert "168" in spoken[0] and "205" in spoken[0], spoken
+        assert spoken[0].startswith("Update "), spoken  # "Update N", not "Tick"
     finally:
         poll.speak, poll.append = orig_speak, orig_append
 
@@ -609,10 +610,10 @@ def test_speech_for_probes_stage_aware():
     row = {"ts": now.isoformat(), "probe1_temp": 168, "probe1_connected": True, "probe1_set": 205,
            "probe2_temp": 210, "probe2_connected": True, "probe2_set": 205}
     text_no_stages = poll.speech_for_probes(row, {})
-    assert "target 205" in text_no_stages, text_no_stages
+    assert "targeting 205" in text_no_stages, text_no_stages
     text_staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
-    assert "next wrap" not in text_staged  # 168 already past 165 -> next stage is done
-    assert "next done at 205" in text_staged, text_staged
+    assert "heading to wrap" not in text_staged  # 168 already past 165 -> next stage is done
+    assert "heading to done at 205" in text_staged, text_staged
 
 
 def test_speech_for_probes_includes_eta():
@@ -625,18 +626,47 @@ def test_speech_for_probes_includes_eta():
     row = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
 
     text = poll.speech_for_probes(row, {})
-    assert "target 205" in text, text
-    assert "minutes away" in text and "around" in text, text  # (205-160)/1 = 45 min
+    assert "targeting 205" in text, text
+    assert "about 45 minutes" in text and "around" in text, text  # (205-160)/1 = 45 min
 
     staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
-    assert "next wrap at 165" in staged, staged
-    assert "minutes away" in staged, staged  # (165-160)/1 = 5 min
+    assert "heading to wrap at 165" in staged, staged
+    assert "about 5 minutes" in staged, staged  # (165-160)/1 = 5 min
 
-    # a stalled probe must NOT get a fabricated ETA
+    # a stalled probe must NOT get a fabricated minutes-ETA -- but must still
+    # say so explicitly, never silently blank.
     poll._eta_samples[1] = [(t0, 160.0), (t1, 160.0)]  # flat
     row2 = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
     flat_text = poll.speech_for_probes(row2, {})
-    assert "minutes away" not in flat_text, flat_text
+    assert "stalled" in flat_text, flat_text
+    assert "about" not in flat_text, flat_text  # no fabricated "about N minutes"
+
+
+def test_speech_for_probes_eta_never_blank():
+    # The whole point of --speak: the ETA/status phrase must always be present,
+    # even on the very first-ever sample (insufficient data), never silently
+    # dropped like it used to be.
+    poll._eta_samples.clear()
+    now = dt.datetime(2026, 7, 4, 12, 0, 0)
+    row = {"ts": now.isoformat(), "probe1_temp": 140, "probe1_connected": True, "probe1_set": 205}
+    text = poll.speech_for_probes(row, {})  # first-ever sample: only 1 point so far
+    assert text.endswith(".") and "--" in text, text
+    after_dash = text.split("--", 1)[1]
+    assert after_dash.strip() not in ("", "."), f"ETA phrase must not be blank: {text!r}"
+    assert "gathering data" in text, text
+
+
+def test_speech_for_probes_update_numbering():
+    # "Update N", not "Tick N" -- increments across calls within a run.
+    poll._eta_samples.clear()
+    poll._update_count = 0
+    row = {"ts": dt.datetime(2026, 7, 4, 12, 0).isoformat(),
+           "probe1_temp": 150, "probe1_connected": True, "probe1_set": 205}
+    first = poll.speech_for_probes(row, {})
+    second = poll.speech_for_probes(row, {})
+    assert first.startswith("Update 1."), first
+    assert second.startswith("Update 2."), second
+    assert "Tick" not in first and "Tick" not in second
 
 
 def test_backoff_seconds():

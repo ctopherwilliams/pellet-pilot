@@ -114,28 +114,42 @@ def speak(text):
         pass
 
 
-def _speech_eta(status, eta_min, now):
-    """Spoken ETA fragment appended after the target/stage phrase.
+_update_count = 0
 
-    Mirrors the same recent-window, stall-aware forecast used for the printed
-    prediction (see print_forecasts/forecast) -- never invents an ETA through
-    a stall.
+
+def _next_update_number():
+    """Incrementing counter for spoken updates, e.g. "Update 12" -- not tied
+    to poll count, so it stays meaningful even across a re-auth or a tick
+    that had nothing new to say."""
+    global _update_count
+    _update_count += 1
+    return _update_count
+
+
+def _speech_eta(status, eta_min, now):
+    """Spoken ETA phrase -- the point of the whole feature, so this always
+    says *something* about timing, never silently omitted. Mirrors the same
+    recent-window, stall-aware forecast used for the printed prediction (see
+    print_forecasts/forecast) -- never invents an ETA through a stall.
     """
     if status == "on_track" and eta_min is not None:
-        clock = ""
-        if now is not None:
-            clock = f", around {(now + dt.timedelta(minutes=eta_min)).strftime('%-I:%M %p')}"
-        return f", about {eta_min:.0f} minutes away{clock}"
+        clock = (now + dt.timedelta(minutes=eta_min)).strftime("%-I:%M %p")
+        return f"should get there in about {eta_min:.0f} minutes, around {clock}"
     if status == "stalled":
-        return ", but it's stalled, no estimate right now"
-    return ""
+        return "it's stalled right now, so no time estimate yet -- might be worth wrapping"
+    if status == "not_rising":
+        return "it's not climbing yet, so it's too early to call"
+    if status == "done":
+        return "already there"
+    return "still gathering data for a time estimate"  # insufficient / no_target
 
 
 def speech_for_probes(row, stages):
-    """Build a short spoken summary of every connected probe: temp, next
-    stage/target, and an ETA -- using the same live sample buffer and forecast
-    logic that drives the printed prediction (print_forecasts must have run
-    first this tick so _eta_samples is up to date; one_shot() guarantees that).
+    """Build the full, ready-to-speak update for every connected probe: temp,
+    next stage/target, and an ETA phrase that's always present -- using the
+    same live sample buffer and forecast logic that drives the printed
+    prediction (print_forecasts must have run first this tick so _eta_samples
+    is up to date; one_shot() guarantees that). Returns "" if no probe has data.
     """
     now = dt.datetime.fromisoformat(row["ts"])
     parts = []
@@ -153,25 +167,31 @@ def speech_for_probes(row, stages):
         if stages.get(i):
             nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
             if not nxt:
-                parts.append(f"probe {i}, {int(temp)} degrees, all stages done")
+                parts.append(f"probe {i} is at {int(temp)} degrees and every stage is done")
                 continue
-            eta = ""
-            if len(temps) >= 2:
-                fcs = forecast_stages(mins, temps, stages[i])
-                if fcs["next"]:
-                    eta = _speech_eta(fcs["next"]["status"], fcs["next"]["eta_min"], now)
-            parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}{eta}")
+            fcs = forecast_stages(mins, temps, stages[i]) if len(temps) >= 2 else None
+            status = fcs["next"]["status"] if fcs and fcs["next"] else "insufficient"
+            eta_min = fcs["next"]["eta_min"] if fcs and fcs["next"] else None
+            eta_phrase = _speech_eta(status, eta_min, now)
+            parts.append(f"probe {i} is at {int(temp)} degrees, heading to {nxt[1]} "
+                         f"at {int(nxt[0])} -- {eta_phrase}")
         else:
             tgt = row.get(f"probe{i}_set")
             if not tgt:
-                parts.append(f"probe {i}, {int(temp)} degrees")
+                parts.append(f"probe {i} is at {int(temp)} degrees")
                 continue
-            eta = ""
-            if len(temps) >= 2:
-                fc = forecast(mins, temps, float(tgt))
-                eta = _speech_eta(fc["status"], fc["eta_min"], now)
-            parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}{eta}")
-    return ". ".join(parts)
+            fc = forecast(mins, temps, float(tgt)) if len(temps) >= 2 else None
+            status = fc["status"] if fc else "insufficient"
+            eta_min = fc["eta_min"] if fc else None
+            eta_phrase = _speech_eta(status, eta_min, now)
+            parts.append(f"probe {i} is at {int(temp)} degrees, targeting "
+                         f"{int(float(tgt))} -- {eta_phrase}")
+    if not parts:
+        return ""
+    grill = row.get("grill")
+    grill_phrase = f" Grill is at {int(float(grill))} degrees." if grill not in (None, "", "None") else ""
+    n = _next_update_number()
+    return f"Update {n}. " + ". ".join(parts) + f".{grill_phrase}"
 
 
 def load_env():
@@ -362,9 +382,9 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
         if speak_every_tick:
-            text = speech_for_probes(row, stages)
+            text = speech_for_probes(row, stages)  # full sentence, incl. "Update N" + grill temp
             if text:
-                speak(f"Update. {text}. Grill {int(row['grill'])} degrees.")
+                speak(text)
         if chart_path:
             # Local import: plot.py imports MAX_PROBES from this module, so a
             # top-level `import plot` here would be circular. Best-effort --
