@@ -282,15 +282,21 @@ flowchart LR
 
 ### Controller status codes
 
-| Code | Meaning | | Code | Meaning |
-|---|---|---|---|---|
-| 99 | Running¹ | | 5 | Preheating |
-| 9 | Shutting down | | 4 | Igniting |
-| 8 | Cool-down | | 3 | Idle |
-| 7 | Custom cook | | 2 | Sleeping |
-| 6 | Manual cook | | | |
+The `[state]` shown in `poll.py` output comes straight from the grill. Here's what each code means, from "off" to "actively cooking":
 
-<sub>¹ On newer controllers `99` is the normal running state; on older D2 controllers it meant "offline." Pellet Pilot trusts live connection + temps over the raw code.</sub>
+| Code | Status | What's happening |
+|---|---|---|
+| 2 | Sleeping | Powered on, screen off |
+| 3 | Idle | Powered on, screen on, not cooking |
+| 4 | Igniting | Startup — lighting the fire pot |
+| 5 | Preheating | Warming up to the set temperature |
+| 6 | Manual cook | Actively cooking, manual mode |
+| 7 | Custom cook | Actively cooking, a saved custom program |
+| 8 | Cool-down | Finishing up, fan running to cool down |
+| 9 | Shutting down | Cool-down complete, powering off |
+| 99 | Running¹ | Actively cooking (newer Timberline-class controllers) |
+
+<sub>¹ On older D2 controllers, code 99 meant "offline" instead. Pellet Pilot trusts live connection + temps over the raw code, so it won't mislabel an active cook as offline.</sub>
 
 ---
 
