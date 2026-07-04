@@ -56,6 +56,73 @@ cp .env.example .env          # add your grill account email
 
 ---
 
+## 💻 How to run it — Mac, Windows, or Claude Code
+
+Two ways to use Pellet Pilot. Both work on **macOS, Windows, and Linux** — all you need is [Python 3.12+](https://www.python.org/downloads/).
+
+### Option A — run it yourself (any computer)
+
+**One-time setup** — paste into Terminal (Mac/Linux) or PowerShell (Windows):
+
+<details open>
+<summary><b>macOS / Linux</b></summary>
+
+```bash
+git clone https://github.com/ctopherwilliams/pellet-pilot.git
+cd pellet-pilot
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env          # then edit .env with your grill-app email + password
+```
+
+Run any tool with `./venv/bin/python <tool>.py`.
+</details>
+
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
+
+```powershell
+git clone https://github.com/ctopherwilliams/pellet-pilot.git
+cd pellet-pilot
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
+copy .env.example .env         # then edit .env with your grill-app email + password
+```
+
+Run any tool with `venv\Scripts\python <tool>.py`.
+</details>
+
+**Then, during a cook — it's just two windows:**
+
+1. **Window 1 — start the loop and leave it running.** It checks the grill every 30 seconds, saves each reading to `cook_log.csv`, prints a live "when's it done" line, and beeps/notifies when you hit a stage:
+   ```
+   poll.py --watch 30 --stage 165:wrap --stage 205:done
+   ```
+   Every tick = one fresh reading logged + the prediction refreshed. Keep it open all cook; `Ctrl-C` to stop.
+
+2. **Window 2 — ask "how's it going?" whenever you like:**
+   ```
+   trend.py               # current rate + ETA to the next gate
+   history.py list        # your past cooks
+   plot.py --out cook.svg # a chart of this cook
+   ```
+
+That's the whole idea: **one window logging + predicting, another for analysis.** (Prefix each command with `./venv/bin/python` on Mac/Linux, or `venv\Scripts\python` on Windows. Credential setup is in the **Credentials** section below.)
+
+### Option B — run it inside Claude Code (chat with your cook) 🔥
+
+If you have [Claude Code](https://claude.com/claude-code), this gets much nicer — you don't memorize any commands, you just **talk to it**. Open the `pellet-pilot` folder in Claude Code (`cd pellet-pilot && claude`) and say things like:
+
+> - *"Start logging my cook — wrap at 165, done at 205."*
+> - *"What's my trend? When will it be done?"*
+> - *"Is it stalling? Should I wrap it?"*
+> - *"Check on it every 20 minutes and tell me when it hits the wrap temp."*
+> - *"Show me a chart of this cook."* · *"How did my last brisket turn out?"*
+
+Claude Code runs the tools for you, reads the numbers, explains them in plain English, and can even **check back on a schedule and ping you**. It's the difference between reading `+0.21°/min` yourself and being told *"it's stalling at 152°, ~90 min from done — wrap it if you're in a hurry."* This whole project was built and babysat exactly this way.
+
+---
+
 ## 🔮 When will it be done?
 
 This is the headline feature: Pellet Pilot watches the climb and tells you **when
