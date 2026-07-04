@@ -17,8 +17,9 @@ import subprocess
 import sys
 import time
 
+import plan
 from alarms import notify_remote
-from forecast import describe, forecast
+from forecast import describe, describe_stages, forecast, forecast_stages
 from traeger_client import Traeger, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
@@ -171,21 +172,48 @@ _fired = set()          # (probe_index, threshold) pairs already triggered this 
 _eta_samples = {}       # probe index -> [(datetime, temp)] for the live prediction
 
 
-def print_forecasts(row):
-    """Print a live 'when's it done' line per connected probe that has a target."""
+def print_forecasts(row, stages=None):
+    """Live 'when's it done' line per connected probe — stage-aware if a plan exists."""
+    stages = stages or {}
     now = dt.datetime.fromisoformat(row["ts"])
     for i in range(1, MAX_PROBES + 1):
-        temp, target = row.get(f"probe{i}_temp"), row.get(f"probe{i}_set")
-        if not row.get(f"probe{i}_connected") or temp is None or not target:
+        temp = row.get(f"probe{i}_temp")
+        if not row.get(f"probe{i}_connected") or temp is None:
             continue
         samples = _eta_samples.setdefault(i, [])
         samples.append((now, float(temp)))
         t0 = samples[0][0]
         mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
-        fc = forecast(mins, [v for _, v in samples], float(target))
-        if fc["status"] == "insufficient":
+        temps = [v for _, v in samples]
+        if len(temps) < 2:
             continue  # wait for a second reading before predicting
-        print(f"  ⏱  P{i} {describe(fc, float(target), now=now)}")
+        if stages.get(i):
+            print(f"  ⏱  P{i} {describe_stages(forecast_stages(mins, temps, stages[i]), now=now)}")
+        elif row.get(f"probe{i}_set"):
+            target = float(row[f"probe{i}_set"])
+            fc = forecast(mins, temps, target)
+            if fc["status"] != "insufficient":
+                print(f"  ⏱  P{i} {describe(fc, target, now=now)}")
+
+
+_STAGE_ACTIONS = {"wrap": "WRAP IT", "done": "DONE — rest it", "rest": "RESTING done"}
+
+
+def check_stage_alarms(row, stages):
+    """Fire a labeled alarm once when a probe crosses each stage temp."""
+    for probe, stagelist in stages.items():
+        temp = row.get(f"probe{probe}_temp")
+        if temp is None:
+            continue
+        for stemp, label in stagelist:
+            key = ("stage", probe, stemp)
+            if temp >= stemp and key not in _fired:
+                _fired.add(key)
+                action = _STAGE_ACTIONS.get(label.lower(), label.upper())
+                msg = f"Probe {probe} hit {int(stemp)}° — {action}"
+                notify("Traeger stage", msg)
+                notify_remote("Traeger stage", msg)
+                print(f"  🔔 STAGE: probe {probe} {int(stemp)}° — {action}")
 
 
 def check_alarms(row, alarms):
@@ -207,8 +235,9 @@ def check_alarms(row, alarms):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None):
+def one_shot(t, alarms=None, stages=None):
     alarms = alarms or {}
+    stages = stages or {}
     status = t.poll()
     for thing, doc in status.items():
         reading = parse_status(thing, doc)
@@ -217,19 +246,27 @@ def one_shot(t, alarms=None):
         state = decode_status(row["system_status"], row["probe1_connected"], row["grill"])
         parts = []
         for i in range(1, MAX_PROBES + 1):
-            if row.get(f"probe{i}_connected"):
+            if not row.get(f"probe{i}_connected"):
+                continue
+            if stages.get(i):
+                plan_txt = " → ".join(f"{lbl} {int(t_)}°" for t_, lbl in stages[i])
+                parts.append(f"P{i} {row[f'probe{i}_temp']}° → {plan_txt}")
+            else:
                 tgt = row.get(f"probe{i}_set")
                 parts.append(f"P{i} {row[f'probe{i}_temp']}°" + (f"→{tgt}°" if tgt else ""))
         probes_txt = "  ".join(parts) if parts else "no probes"
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
-        print_forecasts(row)  # live "when's it done" prediction
-        # auto-arm each connected probe's own target if no explicit alarms were given
+        print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
+        if stages:
+            check_stage_alarms(row, stages)
+        # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
         active = alarms
-        if not active:
+        if not active and not stages:
             active = {i: [row[f"probe{i}_set"]]
                       for i in range(1, MAX_PROBES + 1)
                       if row.get(f"probe{i}_connected") and row.get(f"probe{i}_set")}
-        check_alarms(row, active)
+        if active:
+            check_alarms(row, active)
 
 
 def main():
@@ -294,15 +331,30 @@ def main():
                          for p, ts in sorted(alarms.items()))
         print(f"Alarms armed — {desc} °F")
 
+    # Cook stages: --stage [PROBE:]TEMP[:LABEL] and/or PROBE_STAGES env; persisted to
+    # .cook_plan.json (reused by trend.py/history.py) unless --no-plan.
+    stage_specs = [sys.argv[j + 1] for j, a in enumerate(sys.argv)
+                   if a == "--stage" and j + 1 < len(sys.argv)]
+    stage_specs += (os.environ.get("PROBE_STAGES") or "").split(",")
+    stages = plan.build_plan(stage_specs)
+    if stages and "--no-plan" not in sys.argv:
+        plan.save_plan(stages)
+    elif not stages:
+        stages = plan.load_plan()  # reuse a persisted plan if none given
+    if stages:
+        desc = "; ".join("P%d: %s" % (p, " → ".join(f"{lbl} {int(t_)}°" for t_, lbl in s))
+                         for p, s in sorted(stages.items()))
+        print(f"Cook plan — {desc}")
+
     if interval is None:
-        one_shot(t, alarms)
+        one_shot(t, alarms, stages)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
     try:
         while True:
             try:
-                one_shot(t, alarms)
+                one_shot(t, alarms, stages)
             except Exception as e:
                 print(f"  poll error (will retry): {e}")
                 # token/signed-URL likely expired (~1h) -- re-auth for long cooks

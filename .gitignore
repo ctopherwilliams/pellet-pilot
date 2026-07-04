@@ -18,3 +18,4 @@ __pycache__/
 # os
 .DS_Store
 .testvenv/
+.cook_plan.json

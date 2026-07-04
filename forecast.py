@@ -43,6 +43,65 @@ def forecast(times_min, temps, target, window_min=DEFAULT_WINDOW_MIN):
             "current": cur}
 
 
+def forecast_stages(times_min, temps, stages, window_min=DEFAULT_WINDOW_MIN):
+    """Predict the next unreached stage and the final stage.
+
+    stages: [(temp, label)] (any order). Returns dict:
+      current, rate, next (stage dict|None), final (stage dict|None), done (bool).
+    Each stage dict: {temp, label, eta_min, status}. `final` is None when the next
+    stage IS the final one (nothing extra to show).
+    """
+    stages = sorted(stages, key=lambda s: s[0])
+    cur = float(temps[-1]) if len(temps) else None
+    base = forecast(times_min, temps, stages[-1][0] if stages else None, window_min)
+    out = {"current": cur, "rate": base["rate"], "next": None, "final": None, "done": False}
+    if cur is None or not stages:
+        return out
+    remaining = [(t, lbl) for t, lbl in stages if cur < t]
+    if not remaining:
+        out["done"] = True
+        return out
+
+    def stage_fc(temp, label):
+        fc = forecast(times_min, temps, temp, window_min)
+        return {"temp": temp, "label": label, "eta_min": fc["eta_min"], "status": fc["status"]}
+
+    out["next"] = stage_fc(*remaining[0])
+    if remaining[-1][0] != remaining[0][0]:
+        out["final"] = stage_fc(*remaining[-1])
+    return out
+
+
+def _stage_phrase(s, now):
+    label = s["label"].upper()
+    if s["status"] == "on_track" and s["eta_min"] is not None:
+        clock = ""
+        if now is not None:
+            clock = " (≈ " + (now + dt.timedelta(minutes=s["eta_min"])).strftime("%-I:%M %p") + ")"
+        return f"{label} at {int(s['temp'])}° in ~{s['eta_min']:.0f} min{clock}"
+    if s["status"] == "stalled":
+        return f"{label} at {int(s['temp'])}° — stalled, hold or wrap"
+    if s["status"] == "not_rising":
+        return f"{label} at {int(s['temp'])}° — not rising"
+    return f"{label} at {int(s['temp'])}°"
+
+
+def describe_stages(fcs, now=None):
+    """Human 'next: ... · then: ...' line from a forecast_stages dict."""
+    if fcs["current"] is None:
+        return "no probe data"
+    if fcs["done"]:
+        return "all stages reached ✅"
+    parts = ["next: " + _stage_phrase(fcs["next"], now)]
+    if fcs["final"]:
+        fin = fcs["final"]
+        if fin["status"] == "on_track" and fin["eta_min"] is not None:
+            parts.append(f"then {fin['label']} {int(fin['temp'])}° ~{fin['eta_min']:.0f} min (est)")
+        else:
+            parts.append(f"then {fin['label']} {int(fin['temp'])}°")
+    return "  ·  ".join(parts)
+
+
 def describe(fc, target, now=None):
     """One-line human summary of a forecast dict. `now` = datetime for a clock time."""
     rate = fc["rate"]

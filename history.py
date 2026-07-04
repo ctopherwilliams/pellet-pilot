@@ -18,6 +18,7 @@ import sys
 
 import numpy as np
 
+import plan
 from poll import MAX_PROBES
 from trend import sparkline
 
@@ -108,6 +109,7 @@ def cmd_show(groups, idx):
     print(f"=== cook #{idx} — {s['start']:%Y-%m-%d %H:%M} → {s['end']:%H:%M}  "
           f"({s['duration_min']:.0f} min, {s['readings']} readings) ===")
     print(f"grill peak: {int(s['max_grill'] or 0)}°   thing: {s['thing']}")
+    cook_plan = plan.load_plan()
     t0 = sess[0]["_ts"]
     for k, v in s["probes"].items():
         arr = np.array(v["temps"], dtype=float)
@@ -118,6 +120,11 @@ def cmd_show(groups, idx):
                + ("reached ✅" if v["reached"] else "not reached")) if v["target"] else "no target"
         print(f"P{k}: {int(v['start'])}→{int(v['final'])}° (peak {int(v['peak'])}°)  {rate}  {tgt}")
         print(f"     {sparkline(arr)}")
+        for stemp, label in cook_plan.get(k, []):  # when each stage was reached
+            hit = next((r["_ts"] for r in sess
+                        if (_num(r.get(f"probe{k}_temp")) or -1) >= stemp), None)
+            if hit:
+                print(f"     • {label} {int(stemp)}° reached {hit:%-I:%M %p}")
 
 
 def cmd_summary(groups):

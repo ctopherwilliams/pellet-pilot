@@ -103,6 +103,27 @@ done:     ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 > `(target − current) ÷ rate` gives the minutes remaining. Below ~0.05°/min it
 > reports *stalled* (in the plateau band) or *not rising* rather than a bogus ETA.
 
+### Multi-stage cooks (wrap, then done)
+
+Big cuts have milestones, not one target: pull-to-**wrap** at 165°, then pull-to-rest
+(**done**) at 203°. Define the **stages** and Pellet Pilot predicts the *next* one and
+estimates the final, advancing as each is crossed:
+
+```bash
+./venv/bin/python poll.py --watch 30 --stage 165:wrap --stage 203:done
+```
+
+```text
+[13:22:07] grill 277°  P1 158° → wrap 165° → done 203°  [Running]
+  ⏱  P1 next: WRAP at 165° in ~9 min (≈ 1:31 PM)  ·  then done 203° ~2h 10m (est)
+```
+
+When it crosses a stage you get a labeled alarm — **"P1 165° — WRAP IT"** — then the
+prediction rolls to the next stage. Stage syntax is `[PROBE:]TEMP[:LABEL]` (e.g.
+`--stage 2:170:wrap`); up to 4 stages per probe. Set them once and `trend.py` /
+`history.py` reuse the plan automatically (saved to a gitignored `.cook_plan.json`;
+`--no-plan` to skip). `history.py show` reports when each stage was reached.
+
 ---
 
 ## 🔐 Credentials
@@ -255,6 +276,7 @@ auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECU
 - [x] Pushover / ntfy / webhook alarm targets
 - [x] Grafana-friendly export
 - [x] Issue autopilot — triage issues, draft a fix, open a human-reviewed PR (label-gated, untrusted issue text, never auto-merged)
+- [x] Multi-stage cooks — per-probe wrap/done stages with next-stage prediction & labeled alarms
 
 ---
 

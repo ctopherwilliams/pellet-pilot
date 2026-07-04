@@ -20,6 +20,7 @@ import alarms  # noqa: E402
 import export  # noqa: E402
 import forecast as fc_mod  # noqa: E402
 import history  # noqa: E402
+import plan  # noqa: E402
 import plot  # noqa: E402
 import poll  # noqa: E402,F401
 import traeger_client as tc  # noqa: E402
@@ -118,6 +119,28 @@ def test_forecast():
     assert flat["status"] in ("stalled", "not_rising"), flat
     assert fc_mod.forecast([0, 1], [165, 166], 165)["status"] == "done"
     assert fc_mod.forecast([0], [150], 165)["status"] == "insufficient"
+
+
+def test_stages():
+    p = plan.build_plan(["203:done", "165:wrap", "2:170"])
+    assert p[1] == [(165.0, "wrap"), (203.0, "done")], p
+    assert p[2][0][1] == "done", p  # single unlabeled stage -> "done"
+    assert plan.parse_stage("2:170:wrap") == (2, 170.0, "wrap")
+    # stage-aware forecast advances past a crossed stage (current 169 > wrap 165)
+    fcs = fc_mod.forecast_stages(list(range(10)), [160.0 + i for i in range(10)],
+                                 [(165, "wrap"), (203, "done")])
+    assert fcs["next"]["label"] == "done", fcs
+    # a labeled stage crossing fires once
+    poll._fired.clear()
+    fired = []
+    on, poll.notify = poll.notify, lambda t, m: fired.append(m)
+    onr, poll.notify_remote = poll.notify_remote, lambda t, m: None
+    try:
+        poll.check_stage_alarms({"probe1_temp": 166}, {1: [(165.0, "wrap")]})
+        poll.check_stage_alarms({"probe1_temp": 170}, {1: [(165.0, "wrap")]})
+    finally:
+        poll.notify, poll.notify_remote = on, onr
+    assert sum("WRAP IT" in m for m in fired) == 1, fired
 
 
 def test_ssrf_guard():

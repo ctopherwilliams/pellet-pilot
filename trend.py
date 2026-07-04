@@ -18,7 +18,8 @@ import sys
 
 import numpy as np
 
-from forecast import describe, forecast
+import plan
+from forecast import describe, describe_stages, forecast, forecast_stages
 
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
@@ -86,7 +87,16 @@ def main():
     print(f"trend:    {sparkline(val)}")
     if rate is not None:
         print(f"rate:     {rate:+.2f} °/min   ({rate*60:+.0f} °/hr, recent)")
-    if target:
+
+    # stage-aware if a plan exists for this probe (--stage overrides .cook_plan.json)
+    stage_specs = [sys.argv[i + 1] for i, a in enumerate(sys.argv)
+                   if a == "--stage" and i + 1 < len(sys.argv)]
+    stages = plan.build_plan(stage_specs) or plan.load_plan()
+    probe_idx = (int(col.replace("probe", "").replace("_temp", ""))
+                 if col.startswith("probe") and col.endswith("_temp") else None)
+    if probe_idx and stages.get(probe_idx):
+        print(f"plan:     {describe_stages(forecast_stages(mins, val, stages[probe_idx]), now=ts[-1])}")
+    elif target:
         print(f"done:     {describe(fc, target, now=ts[-1])}")
 
 
