@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/ctopherwilliams/pellet-pilot/security/advisories/new
+    about: Please report vulnerabilities privately here, not as a public issue.
+  - name: 💬 Questions & discussion
+    url: https://github.com/ctopherwilliams/pellet-pilot/discussions
+    about: Ask usage questions or share cooks here.

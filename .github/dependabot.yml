@@ -9,3 +9,14 @@ updates:
       python-deps:
         patterns:
           - "*"
+
+  # Keep GitHub Actions current so no workflow ever runs a deprecated Node runtime.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
