@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 
+from alarms import notify_remote
 from traeger_client import Traeger, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
@@ -181,7 +182,9 @@ def check_alarms(row, alarms):
             key = (probe, thr)
             if temp >= thr and key not in _fired:
                 _fired.add(key)
-                notify("Traeger probe", f"Probe {probe} reached {int(thr)}°F (now {int(temp)}°F)")
+                msg = f"Probe {probe} reached {int(thr)}°F (now {int(temp)}°F)"
+                notify("Traeger probe", msg)          # local desktop/voice
+                notify_remote("Traeger probe", msg)   # Pushover/ntfy/webhook, if configured
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
