@@ -1,4 +1,4 @@
 # Pinned for reproducible installs and supply-chain stability.
 requests==2.34.2
-paho-mqtt==1.6.1
-numpy==2.5.0
+paho-mqtt==2.1.0
+numpy==2.5.1
