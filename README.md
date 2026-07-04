@@ -349,23 +349,21 @@ auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECU
 
 ## 🗺 Roadmap
 
-- [x] `history.py` — browse & re-plot past cooks, per-session summaries
-- [x] Multi-probe support in the trend view
-- [x] PNG/interactive plot export
-- [x] Pushover / ntfy / webhook alarm targets
-- [x] Grafana-friendly export
-- [x] Issue autopilot — triage issues, draft a fix, open a human-reviewed PR (label-gated, untrusted issue text, never auto-merged)
-- [x] Multi-stage cooks — per-probe wrap/done stages with next-stage prediction & labeled alarms
-- [x] Meat-probe forecast chart — auto-detects the pull/wrap, draws stage lines, projects a finish time
+Pellet Pilot already covers the full loop end to end: multi-probe live tracking,
+stage-aware predictions with spoken updates, local + remote alarms, cook
+history, charts with projected finish times, and Grafana export. Here's where
+it can go next:
 
-**Up next:**
+- [ ] **Stage presets** (`--preset brisket`, `pork-shoulder`, `chicken`, ...) — skip typing `--stage` every cook
+- [ ] **`history.py compare A B`** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
+- [ ] **Shareable post-cook report** — one-page chart + stage times + stats card, for exporting or sharing a finished cook
+- [ ] **Live local dashboard** — auto-refreshing HTML forecast chart on `127.0.0.1` (loopback-only, same pattern as `export.py --serve`), for a leave-it-open browser tab during a cook
+- [ ] **Interactive Cognito MFA/challenge support at login** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
+- [ ] **Per-grill filtering** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
+- [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick, mention only rate-of-change, or add quiet hours
+- [ ] **Packaged install** (`pipx install` or a single-file build) — lower the barrier below "clone + venv" for non-developers
 
-- [ ] Stage presets (`--preset brisket`, `pork-shoulder`, ...) — skip typing `--stage` every cook
-- [ ] `history.py compare A B` — overlay two past cooks on one chart (e.g. "is this brisket tracking like my last one?")
-- [ ] Shareable post-cook report — one-page Markdown/HTML card: chart + stage times + stats, for exporting or sharing a finished cook
-- [ ] Live local dashboard — auto-refreshing HTML forecast chart on `127.0.0.1` (same loopback-only pattern as `export.py --serve`), for a leave-it-open browser tab during a cook
-- [ ] `--watch` re-auth backoff — back off exponentially on repeated Cognito auth failures instead of retrying every interval
-- [ ] Cognito MFA / challenge / refresh-token support — accounts with MFA enabled currently can't authenticate
+Have an idea? Open an issue — with the `autofix` label, this repo can draft its own fix.
 
 ---
 
