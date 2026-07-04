@@ -18,6 +18,7 @@ import sys
 import time
 
 from alarms import notify_remote
+from forecast import describe, forecast
 from traeger_client import Traeger, parse_status
 
 KEYCHAIN_SERVICE = "traeger-wifire"
@@ -166,7 +167,25 @@ def append(row):
         w.writerow(row)
 
 
-_fired = set()  # (probe_index, threshold) pairs already triggered this run
+_fired = set()          # (probe_index, threshold) pairs already triggered this run
+_eta_samples = {}       # probe index -> [(datetime, temp)] for the live prediction
+
+
+def print_forecasts(row):
+    """Print a live 'when's it done' line per connected probe that has a target."""
+    now = dt.datetime.fromisoformat(row["ts"])
+    for i in range(1, MAX_PROBES + 1):
+        temp, target = row.get(f"probe{i}_temp"), row.get(f"probe{i}_set")
+        if not row.get(f"probe{i}_connected") or temp is None or not target:
+            continue
+        samples = _eta_samples.setdefault(i, [])
+        samples.append((now, float(temp)))
+        t0 = samples[0][0]
+        mins = [(t - t0).total_seconds() / 60 for t, _ in samples]
+        fc = forecast(mins, [v for _, v in samples], float(target))
+        if fc["status"] == "insufficient":
+            continue  # wait for a second reading before predicting
+        print(f"  ⏱  P{i} {describe(fc, float(target), now=now)}")
 
 
 def check_alarms(row, alarms):
@@ -203,6 +222,7 @@ def one_shot(t, alarms=None):
                 parts.append(f"P{i} {row[f'probe{i}_temp']}°" + (f"→{tgt}°" if tgt else ""))
         probes_txt = "  ".join(parts) if parts else "no probes"
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
+        print_forecasts(row)  # live "when's it done" prediction
         # auto-arm each connected probe's own target if no explicit alarms were given
         active = alarms
         if not active:

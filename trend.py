@@ -18,6 +18,8 @@ import sys
 
 import numpy as np
 
+from forecast import describe, forecast
+
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
 
@@ -74,30 +76,18 @@ def main():
         if len(val) < 2:
             sys.exit("Not enough points in that window.")
 
-    # linear fit: temp = slope * minutes + intercept
-    slope, intercept = np.polyfit(mins, val, 1)
     span = mins[-1] - mins[0]
+    fc = forecast(mins, val, target)      # recent-window, stall-aware prediction
+    rate = fc["rate"]
 
     print(f"=== {col} trend ===")
     print(f"points:   {len(val)}  over {span:.1f} min")
     print(f"current:  {val[-1]:.0f}°   (min {val.min():.0f}°, max {val.max():.0f}°)")
     print(f"trend:    {sparkline(val)}")
-    print(f"rate:     {slope:+.2f} °/min   ({slope*60:+.0f} °/hr)")
-
-    if target and target > 0:
-        remaining = target - val[-1]
-        if slope > 0.01 and remaining > 0:
-            eta_min = remaining / slope
-            eta_clock = (ts[-1] + dt.timedelta(minutes=eta_min)).strftime("%-I:%M %p")
-            print(f"target:   {target:.0f}°  ->  ~{eta_min:.0f} min away (≈ {eta_clock})")
-        elif remaining <= 0:
-            print(f"target:   {target:.0f}°  ->  reached ✅")
-        else:
-            print(f"target:   {target:.0f}°  ->  not rising; no ETA")
-
-    # stall detector for probes (the classic brisket/pork-shoulder plateau)
-    if col.startswith("probe") and col.endswith("_temp") and span >= 15 and abs(slope) < 0.3 and 150 <= val[-1] <= 175:
-        print("note:     flat rise in the 150–170° band — likely the stall. Normal; ride it out or wrap.")
+    if rate is not None:
+        print(f"rate:     {rate:+.2f} °/min   ({rate*60:+.0f} °/hr, recent)")
+    if target:
+        print(f"done:     {describe(fc, target, now=ts[-1])}")
 
 
 if __name__ == "__main__":

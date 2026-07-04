@@ -18,6 +18,7 @@ import paho.mqtt.client as mqtt  # noqa: E402
 
 import alarms  # noqa: E402
 import export  # noqa: E402
+import forecast as fc_mod  # noqa: E402
 import history  # noqa: E402
 import plot  # noqa: E402
 import poll  # noqa: E402,F401
@@ -106,6 +107,17 @@ def test_export_influx():
     lp = export.to_influx(_rows(dt.datetime(2026, 7, 4, 9, 0), 3))
     assert lp.startswith("pellet_pilot,thing=g "), lp[:40]
     assert "probe1=140.0" in lp and "grill=250.0" in lp, lp
+
+
+def test_forecast():
+    on = fc_mod.forecast(list(range(10)), [150.0 + i for i in range(10)], 180)
+    assert on["status"] == "on_track" and on["eta_min"] > 0, on
+    assert "min to 180" in fc_mod.describe(on, 180)
+    # recent window: a fast early rise that then flattens must NOT project a soon-ETA
+    flat = fc_mod.forecast(list(range(60)), [130 + min(i, 20) for i in range(60)], 165)
+    assert flat["status"] in ("stalled", "not_rising"), flat
+    assert fc_mod.forecast([0, 1], [165, 166], 165)["status"] == "done"
+    assert fc_mod.forecast([0], [150], 165)["status"] == "insufficient"
 
 
 def test_ssrf_guard():

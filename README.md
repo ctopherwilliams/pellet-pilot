@@ -50,15 +50,58 @@ cp .env.example .env          # add your grill account email
 ```
 
 ```text
-[2026-07-04T13:22:07] grill 277° (set 275°)  probe 168° (set 203°)  [Running]
+[13:22:07] grill 277° (set 275°)  P1 168°→203°  [Running]
+  ⏱  P1 ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
+```
 
+---
+
+## 🔮 When will it be done?
+
+This is the headline feature: Pellet Pilot watches the climb and tells you **when
+each probe will hit its target** — live, as it polls.
+
+```bash
+./venv/bin/python poll.py --watch 30 --alarm 203
+```
+
+```text
+[13:22:07] grill 277° (set 275°)  P1 168°→203°  [Running]
+  ⏱  P1 ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
+```
+
+Read that as: **probe 1 reaches 203° in about 47 minutes, ~4:45 PM, rising 0.75°/min.**
+The estimate refreshes every reading and is fit from a **recent window** of data, so
+it tracks the cook speeding up or slowing down instead of lagging on a whole-cook average.
+
+**During the stall** — the 150–175° plateau where a big cut parks for a while — the
+rate flattens, so instead of guessing a wild time it tells you plainly:
+
+```text
+  ⏱  P1 stalled near 152° · hold, or wrap to push through  (+0.03°/min)
+```
+
+Want a one-off check without the live loop? `trend.py` prints the same prediction
+from your log at any time:
+
+```bash
+./venv/bin/python trend.py             # probe 1
+./venv/bin/python trend.py --probe 2   # a second probe
+./venv/bin/python trend.py --window 15 # base it on just the last 15 min
+```
+
+```text
 === probe1_temp trend ===
 points:   34  over 61.0 min
 current:  168°   (min 122°, max 168°)
 trend:    ▁▁▂▂▃▃▄▄▅▅▆▆▇▇██
-rate:     +0.75 °/min   (+45 °/hr)
-target:   203°  ->  ~47 min away (≈ 4:45 PM)
+rate:     +0.75 °/min   (+45 °/hr, recent)
+done:     ~47 min to 203° (≈ 4:45 PM) · +0.75°/min
 ```
+
+> How it works: a least-squares fit over the recent window gives °/min, then
+> `(target − current) ÷ rate` gives the minutes remaining. Below ~0.05°/min it
+> reports *stalled* (in the plateau band) or *not rising* rather than a bogus ETA.
 
 ---
 
