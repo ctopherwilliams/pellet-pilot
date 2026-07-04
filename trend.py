@@ -32,7 +32,10 @@ def load(col):
                 continue
             ts.append(dt.datetime.fromisoformat(r["ts"]))
             val.append(float(v))
-            st = r.get("probe1_set") if col == "probe1_temp" else r.get("set")
+            if col.startswith("probe") and col.endswith("_temp"):
+                st = r.get(col.replace("_temp", "_set"))
+            else:
+                st = r.get("set")
             if st not in (None, "", "None"):
                 target = float(st)
     if len(val) < 2:
@@ -52,6 +55,8 @@ def sparkline(v):
 def main():
     col = "probe1_temp"
     window_min = None
+    if "--probe" in sys.argv:
+        col = f"probe{int(sys.argv[sys.argv.index('--probe') + 1])}_temp"
     if "--col" in sys.argv:
         col = sys.argv[sys.argv.index("--col") + 1]
         if col == "probe":
@@ -91,7 +96,7 @@ def main():
             print(f"target:   {target:.0f}°  ->  not rising; no ETA")
 
     # stall detector for probes (the classic brisket/pork-shoulder plateau)
-    if col == "probe1_temp" and span >= 15 and abs(slope) < 0.3 and 150 <= val[-1] <= 175:
+    if col.startswith("probe") and col.endswith("_temp") and span >= 15 and abs(slope) < 0.3 and 150 <= val[-1] <= 175:
         print("note:     flat rise in the 150–170° band — likely the stall. Normal; ride it out or wrap.")
 
 
