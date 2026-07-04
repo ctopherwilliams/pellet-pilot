@@ -10,6 +10,7 @@ Pellet Pilot handles credentials for your Traeger grill account. This document d
 | Cognito IdToken (~1h) | Session hijack → read grill status, issue command `90` (status refresh only) | Held in memory only; renewed via **refresh token** on expiry (no password re-sent) during `--watch`, with backoff if renewal keeps failing |
 | Bitwarden session (`.bw_session`) | Full vault access | Gitignored; warn if file mode ≠ `600`; session key passed to `bw` via `BW_SESSION` env, not `--session` argv (avoids exposure via `ps`/procfs) |
 | Cook logs (`cook_log.csv`) | Privacy (temps, timing, thing names) | Gitignored |
+| Cook Report (`report.py`, meant to be shared) | Leaking the grill's device identifier to whoever the report is sent/posted to | `thingName` is deliberately never included in the report body, unlike `history.py`'s local-only CLI output |
 | Local machine | AppleScript injection via alarm text | User-influenced strings stripped of control characters (incl. newlines) and escaped before `osascript` |
 | Network path | MITM on MQTT WSS | TLS verification **on by default**; `TRAEGER_INSECURE_TLS=1` only as last resort |
 | Grill identifier (`thingName`, from the Traeger API) | Path/MQTT-topic injection if the upstream API ever returned an unexpected value | Validated against an alphanumeric pattern before use in any URL path or MQTT topic |

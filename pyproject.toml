@@ -29,6 +29,7 @@ py-modules = [
     "presets",
     "forecast",
     "plot",
+    "report",
     "history",
     "trend",
     "export",

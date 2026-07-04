@@ -32,6 +32,7 @@ import plot  # noqa: E402
 import poll  # noqa: E402,F401
 import presets  # noqa: E402
 import probe_names  # noqa: E402
+import report  # noqa: E402
 import traeger_client as tc  # noqa: E402
 import trend  # noqa: E402,F401
 
@@ -872,19 +873,59 @@ def test_pellet_cli_dispatches_to_each_subcommand():
     orig_argv = sys.argv
     calls = []
     originals = {}
-    for mod, name in ((history, "history"), (trend, "trend"), (plot, "plot"), (export, "export")):
+    mods = ((history, "history"), (trend, "trend"), (plot, "plot"),
+            (report, "report"), (export, "export"))
+    for mod, name in mods:
         originals[name] = mod.main
         mod.main = (lambda n: lambda: calls.append(n))(name)
     try:
-        for cmd, name in (("history", "history"), ("trend", "trend"),
-                          ("chart", "plot"), ("export", "export")):
+        for cmd, name in (("history", "history"), ("trend", "trend"), ("chart", "plot"),
+                          ("report", "report"), ("export", "export")):
             sys.argv = ["pellet", cmd]
             pellet.main()
-        assert calls == ["history", "trend", "plot", "export"], calls
+        assert calls == ["history", "trend", "plot", "report", "export"], calls
     finally:
-        history.main, trend.main, plot.main, export.main = (
-            originals["history"], originals["trend"], originals["plot"], originals["export"])
+        for mod, name in mods:
+            mod.main = originals[name]
         sys.argv = orig_argv
+
+
+def test_report_includes_chart_and_probe_stats():
+    sess = _rows(dt.datetime(2026, 7, 4, 9, 0), 12, p1=140, p1_set=203, p2=100)
+    html = report.build_report(sess, stages={}, names={1: "pork butt"})
+    assert "<svg " in html and "</svg>" in html, html[:200]
+    assert "the pork butt" in html, html
+    assert "140°" in html  # probe 1 start temp
+    assert "probe 2" in html  # unnamed probe falls back to generic label
+
+
+def test_report_omits_device_thing_id():
+    # The report is meant to leave the machine -- the raw grill thingName
+    # (a device identifier) must never appear in it, unlike history.py's
+    # local-only CLI output.
+    secret_thing = "SECRETDEVICEID123"
+    sess = [dict(r, thing=secret_thing) for r in _rows(dt.datetime(2026, 7, 4, 9, 0), 5)]
+    html = report.build_report(sess)
+    assert secret_thing not in html, html
+
+
+def test_report_shows_stage_crossing_times():
+    sess = _rows(dt.datetime(2026, 7, 4, 9, 0), 12, p1=160, p1_set=203)  # climbs 160 -> 171
+    html = report.build_report(sess, stages={1: [(165.0, "wrap"), (203.0, "done")]})
+    assert "wrap (165°)" in html, html
+    assert "not reached" in html  # 203 ("done") never reached in this short synthetic climb
+
+
+def test_stall_minutes():
+    # Flat readings inside the classic 150-175F stall band count; a normal
+    # climb through the same range does not.
+    stalled = _rows(dt.datetime(2026, 7, 4, 9, 0), 6, p1=160, p1_set=None)
+    for r in stalled:
+        r["probe1_temp"] = "160"  # flat, well inside the stall band
+    assert report._stall_minutes(stalled, 1) > 0, stalled
+
+    climbing = _rows(dt.datetime(2026, 7, 4, 9, 0), 6, p1=160, p1_set=None)  # 160..165, still climbing
+    assert report._stall_minutes(climbing, 1) == 0, "a genuine climb shouldn't count as stalled"
 
 
 def test_backoff_seconds():

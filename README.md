@@ -388,7 +388,15 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 # Grafana-friendly export (local files) or a localhost Prometheus endpoint
 ./venv/bin/python export.py --format influx --out cook.lp
 ./venv/bin/python export.py --serve                # http://127.0.0.1:9109/metrics
+
+# Shareable Cook Report — one self-contained HTML file (chart + stats), no server
+./venv/bin/python report.py --out cook_report.html
 ```
+
+The Cook Report embeds its chart inline and never includes the grill's device
+identifier, so it's safe to send to someone or post — unlike the raw `cook_log.csv`.
+
+
 
 **Remote alarms** (in addition to the local macOS notification) — set any of these
 env vars and probe-crossing alerts are delivered there too:
