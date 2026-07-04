@@ -53,9 +53,8 @@ def assert_safe_url(url):
 
 
 def _post(url, **kw):
-    kw.setdefault("timeout", TIMEOUT)
-    kw["allow_redirects"] = False  # a redirect could bounce to an internal host
-    return requests.post(url, **kw)
+    # timeout is always set; redirects disabled so a 3xx can't reach an internal host.
+    return requests.post(url, timeout=TIMEOUT, allow_redirects=False, **kw)
 
 
 def pushover(title, message):

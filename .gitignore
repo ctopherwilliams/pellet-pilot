@@ -17,3 +17,4 @@ __pycache__/
 
 # os
 .DS_Store
+.testvenv/

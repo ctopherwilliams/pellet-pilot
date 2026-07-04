@@ -17,6 +17,29 @@ Pellet Pilot handles credentials for your Traeger grill account. This document d
 
 **Out of scope:** Traeger cloud-side security, grill firmware, physical access, and compliance with Traeger's Terms of Service.
 
+## Remote alarm egress (`alarms.py`)
+
+Optional probe alarms can POST to Pushover, ntfy, or a generic webhook. Controls:
+
+- **HTTPS required** — non-`https://` targets are refused.
+- **SSRF guard** on the generic webhook (and ntfy server): the host is resolved and
+  the request is refused if any resolved address is private, loopback, link-local
+  (incl. cloud metadata `169.254.169.254`), reserved, multicast, or unspecified.
+- **No redirects** — a `3xx` cannot bounce the request to an internal host.
+- **Config via env only** (`PUSHOVER_*`, `NTFY_TOPIC`, `ALARM_WEBHOOK_URL`); tokens are never logged.
+- `ALARM_ALLOW_PRIVATE=1` relaxes the private-IP check for self-hosted LAN targets — opt-in, and it lowers SSRF protection.
+
+## Issue autopilot trust model (`.github/workflows/issue-autopilot.yml`)
+
+An optional workflow drafts fixes for issues. It is designed to be safe on a public repo:
+
+- **Label-gated** — triggers only on the `autofix` / `autofix-approved` labels, and
+  applying labels requires triage/write permission, so untrusted issue authors cannot start it.
+- **Untrusted input** — issue text is treated as data; the agent is instructed to ignore embedded instructions.
+- **Two-phase** — `autofix` posts a plan; `autofix-approved` implements. Human checkpoint between.
+- **PR-only, human-reviewed, never auto-merged** — output must pass the required `audit` check and be merged by a human. The auto-merge automation only acts on `dependabot[bot]`.
+- **Least privilege** — the job token is limited to `contents`/`pull-requests`/`issues: write`; the model key is a repo secret.
+
 ## What is never written to disk or committed
 
 - Account **password** — resolved in-memory at runtime and cleared after login.

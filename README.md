@@ -164,13 +164,54 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 
 ---
 
+## 🧰 More tools
+
+```bash
+# Multiple probes: alarms and trends target a specific probe
+./venv/bin/python poll.py --watch 30 --alarm 1:203 --alarm 2:165
+./venv/bin/python trend.py --probe 2
+
+# Browse past cooks (sessions split on gaps in the log)
+./venv/bin/python history.py list
+./venv/bin/python history.py show 1
+./venv/bin/python history.py summary
+
+# Chart a cook — SVG (no deps), interactive HTML, or PNG (matplotlib)
+./venv/bin/python plot.py --out cook.svg
+./venv/bin/python plot.py --html --out cook.html
+./venv/bin/python plot.py --png --out cook.png     # pip install -r requirements-plot.txt
+
+# Grafana-friendly export (local files) or a localhost Prometheus endpoint
+./venv/bin/python export.py --format influx --out cook.lp
+./venv/bin/python export.py --serve                # http://127.0.0.1:9109/metrics
+```
+
+**Remote alarms** (in addition to the local macOS notification) — set any of these
+env vars and probe-crossing alerts are delivered there too:
+
+| Provider | Env |
+|---|---|
+| Pushover | `PUSHOVER_TOKEN`, `PUSHOVER_USER` |
+| ntfy | `NTFY_TOPIC` (server via `NTFY_SERVER`) |
+| Webhook | `ALARM_WEBHOOK_URL` (POSTed JSON) |
+
+HTTPS is required and the generic webhook is SSRF-guarded (private/loopback/metadata
+addresses are refused). See [SECURITY.md](SECURITY.md).
+
+**Issue autopilot** — apply the `autofix` label to an issue for an AI-drafted fix
+plan, then `autofix-approved` to get a human-reviewed PR. Label-gated, never
+auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECURITY.md).
+
+---
+
 ## 🗺 Roadmap
 
-- [ ] `history.py` — browse & re-plot past cooks, per-session summaries
-- [ ] Multi-probe support in the trend view
-- [ ] PNG/interactive plot export
-- [ ] Pushover / ntfy / webhook alarm targets
-- [ ] Grafana-friendly export
+- [x] `history.py` — browse & re-plot past cooks, per-session summaries
+- [x] Multi-probe support in the trend view
+- [x] PNG/interactive plot export
+- [x] Pushover / ntfy / webhook alarm targets
+- [x] Grafana-friendly export
+- [x] Issue autopilot — triage issues, draft a fix, open a human-reviewed PR (label-gated, untrusted issue text, never auto-merged)
 
 ---
 
