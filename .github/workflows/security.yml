@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -40,3 +40,11 @@ jobs:
 
       - name: Static analysis (bandit)
         run: bandit -c bandit.yaml -r poll.py traeger_client.py trend.py -ll
+
+  # Stable check name for branch protection. Passes only if the whole matrix passed,
+  # so the required status check does not change when the matrix does.
+  audit:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All test-matrix jobs passed."
