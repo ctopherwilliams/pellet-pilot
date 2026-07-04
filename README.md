@@ -62,15 +62,49 @@ target:   203°  ->  ~47 min away (≈ 4:45 PM)
 
 ---
 
-## 🔐 Credentials — three secure options
+## 🔐 Credentials
 
-Your password is **never** stored in the repo, in code, or in plaintext logs. Pick the level that suits you (resolution order shown):
+Your password is **never** committed, hard-coded, or written to a plaintext log. Pick whichever fits your setup — the program tries them in order and uses the first that works.
 
-| # | Source | How | Security |
-|---|--------|-----|----------|
-| 1 | **Bitwarden** | Unlock your vault into a local session; set `TRAEGER_BW_ITEM` | 🟢 Best — pulled in-memory at runtime |
-| 2 | **macOS Keychain** | `security add-generic-password -s pellet-pilot -a you@email -w` | 🟢 Encrypted at rest |
-| 3 | **`.env` file** | `TRAEGER_PASSWORD=...` (gitignored) | 🟡 Fine on a private machine |
+### Basic setup — any OS (Linux · Windows · macOS)
+
+The simplest option: drop your login into a local `.env` file (already gitignored).
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env`:
+
+```ini
+TRAEGER_USERNAME=you@example.com
+TRAEGER_PASSWORD=your-grill-account-password
+```
+
+That's all — run `poll.py`. This is the same email &amp; password you use in the grill's mobile app.
+
+<details>
+<summary>Prefer an environment variable over a file?</summary>
+
+**Linux / macOS (bash · zsh):**
+```bash
+export TRAEGER_USERNAME="you@example.com"
+export TRAEGER_PASSWORD="your-password"
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:TRAEGER_USERNAME = "you@example.com"
+$env:TRAEGER_PASSWORD = "your-password"
+```
+</details>
+
+### Advanced — keep the password out of any file
+
+| Source | How | Notes |
+|--------|-----|-------|
+| 🔑 **Bitwarden** (any OS) | Unlock your vault into a session, set `TRAEGER_BW_ITEM` to the item name/id | Fetched in-memory at runtime |
+| 🍎 **macOS Keychain** | `security add-generic-password -s pellet-pilot -a you@email -w` | Encrypted at rest |
 
 See [SECURITY.md](SECURITY.md) for the full model and what is *never* written to disk.
 
@@ -78,17 +112,32 @@ See [SECURITY.md](SECURITY.md) for the full model and what is *never* written to
 
 ## 🧩 How it works
 
-```
-┌────────────┐  1. Cognito login (email+pass)   ┌──────────────────────┐
-│  poll.py   │ ───────────────────────────────► │  Grill cloud (AWS)   │
-│            │ ◄─────────────  IdToken           │  Cognito + IoT MQTT  │
-│            │  2. GET /users/self  (your grill) │                      │
-│  trend.py  │  3. POST /mqtt-connections        │                      │
-│            │  4. MQTT-over-WSS  ◄── live status│                      │
-└─────┬──────┘                                    └──────────────────────┘
-      │ appends
-      ▼
-  cook_log.csv  ──►  trend.py  ──►  rate · ETA · stall · sparkline
+```mermaid
+flowchart LR
+    subgraph local["Your machine"]
+        P["poll.py"]
+        C[("cook_log.csv")]
+        T["trend.py"]
+        OUT(["terminal analytics"])
+    end
+    subgraph cloud["Grill cloud · AWS"]
+        COG["Cognito auth"]
+        API["REST API"]
+        MQ["IoT MQTT broker"]
+    end
+    P -->|"① email + password"| COG
+    COG -->|"IdToken"| P
+    P -->|"② GET /users/self"| API
+    P -->|"③ POST /mqtt-connections"| API
+    P <-->|"④ live grill + probe temps"| MQ
+    P -->|"append reading"| C
+    C --> T
+    T -->|"rate · ETA · stall"| OUT
+
+    classDef fire fill:#2b211a,stroke:#ff8c1a,color:#ffb454;
+    classDef store fill:#241a14,stroke:#3d2e22,color:#c9b8a8;
+    class P,T,COG,API,MQ fire
+    class C,OUT store
 ```
 
 - **`traeger_client.py`** — auth, grill discovery, one-shot MQTT status read, status parser.
