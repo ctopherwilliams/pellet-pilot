@@ -104,7 +104,7 @@ $env:TRAEGER_PASSWORD = "your-password"
 | Source | How | Notes |
 |--------|-----|-------|
 | 🔑 **Bitwarden** (any OS) | Unlock your vault into a session, set `TRAEGER_BW_ITEM` to the item name/id | Fetched in-memory at runtime |
-| 🍎 **macOS Keychain** | `security add-generic-password -s pellet-pilot -a you@email -w` | Encrypted at rest |
+| 🍎 **macOS Keychain** | `security add-generic-password -s traeger-wifire -a you@email -w` | Encrypted at rest |
 
 See [SECURITY.md](SECURITY.md) for the full model and what is *never* written to disk.
 
