@@ -117,7 +117,9 @@ def test_export_influx():
 def test_forecast():
     on = fc_mod.forecast(list(range(10)), [150.0 + i for i in range(10)], 180)
     assert on["status"] == "on_track" and on["eta_min"] > 0, on
-    assert "min to 180" in fc_mod.describe(on, 180)
+    described = fc_mod.describe(on, 180, now=dt.datetime(2026, 7, 4, 13, 0))
+    assert "min to 180" in described
+    assert "≈" in described and ("AM" in described or "PM" in described), described
     # recent window: a fast early rise that then flattens must NOT project a soon-ETA
     flat = fc_mod.forecast(list(range(60)), [130 + min(i, 20) for i in range(60)], 165)
     assert flat["status"] in ("stalled", "not_rising"), flat
@@ -133,6 +135,18 @@ def test_forecast_zero_variance_window():
     fc = fc_mod.forecast([5.0, 5.0, 5.0], [160.0, 161.0, 162.0], 205)
     assert fc["status"] == "insufficient", fc
     assert fc["rate"] is None and fc["eta_min"] is None, fc
+
+
+def test_describe_stages_includes_clock_for_both_next_and_final():
+    # Every ETA must carry a clock time, not just minutes-remaining -- this
+    # locks in a real bug where the "final stage" phrase (e.g. "then done 205
+    # ~46 min") dropped the clock even though `now` was available.
+    mins = list(range(20))
+    temps = [140.0 + i for i in mins]  # +1 deg/min
+    fcs = fc_mod.forecast_stages(mins, temps, [(165, "wrap"), (190, "mid"), (205, "done")])
+    text = fc_mod.describe_stages(fcs, now=dt.datetime(2026, 7, 4, 13, 0))
+    assert text.count("≈") == 2, text  # both "next:" and "then:" must show a clock
+    assert "AM" in text or "PM" in text, text
 
 
 def test_stages():
