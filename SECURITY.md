@@ -31,6 +31,13 @@ Optional probe alarms can POST to Pushover, ntfy, or a generic webhook. Controls
 - **No redirects** — a `3xx` cannot bounce the request to an internal host.
 - **Config via env only** (`PUSHOVER_*`, `NTFY_TOPIC`, `ALARM_WEBHOOK_URL`); tokens are never logged.
 - `ALARM_ALLOW_PRIVATE=1` relaxes the private-IP check for self-hosted LAN targets — opt-in, and it lowers SSRF protection.
+- **Sanitized before send** — title/message are stripped of control characters (incl. newlines) at the `notify_remote()` choke point before reaching any provider. This matters most for ntfy, which puts `title` in an HTTP header.
+
+## Local exports & endpoints
+
+- **`export.py --serve`** binds a Prometheus `/metrics` endpoint to `127.0.0.1` only — no external network exposure, so it intentionally has no authentication. Don't put it behind a reverse proxy without adding auth of your own.
+- **`.cook_plan.json`** (`plan.py`) is capped at 256KB on load as a sanity check — a real plan is a few dozen bytes. It's written only by this tool's own `--stage` flow, so this is a defensive ceiling, not a response to an untrusted-input path.
+- **MQTT topic handling** verifies the `prod/thing/update/` prefix before parsing a message, rather than assuming it.
 
 ## Issue autopilot trust model (`.github/workflows/issue-autopilot.yml`)
 

@@ -21,10 +21,13 @@ Config via environment (never committed):
 import contextlib
 import ipaddress
 import os
+import re
 import socket
 import urllib.parse
 
 import requests
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 try:
     import urllib3.util.connection as _urllib3_connection
@@ -142,8 +145,21 @@ def webhook(title, message):
     return True
 
 
+def _sanitize(text):
+    """Strip control characters (incl. newlines) before a value reaches a
+    remote provider. ntfy() puts `title` straight into an HTTP header, so an
+    embedded CR/LF there would be a header-injection primitive if not for
+    this; message bodies get the same treatment for consistency with the
+    local AppleScript path (poll.py's _applescript_escape). Callers today only
+    ever pass locally-authored text (stage labels from --stage/.cook_plan.json),
+    but this is the actual egress boundary, so it's where the guarantee lives.
+    """
+    return _CONTROL_CHARS.sub(" ", text).replace("\n", " ").replace("\r", " ")
+
+
 def notify_remote(title, message):
     """Deliver to every configured provider. Best-effort; never raises."""
+    title, message = _sanitize(title), _sanitize(message)
     sent = []
     for name, fn in (("pushover", pushover), ("ntfy", ntfy), ("webhook", webhook)):
         try:
