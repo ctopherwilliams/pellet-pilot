@@ -1,0 +1,30 @@
+name: Dependabot auto-merge
+
+# Auto-merges Dependabot PRs (security + version updates) once required checks pass.
+# Branch protection requires the `audit` job (pip-audit + bandit), so a PR that fails
+# CI will NOT merge. This trades human review of dependency bumps for speed — a
+# passing-but-malicious/breaking update can land unreviewed. Accepted tradeoff.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Enable auto-merge
+        # Merges automatically after required status checks succeed.
+        # To exclude major bumps from auto-merge, add to this step:
+        #   if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
