@@ -44,15 +44,22 @@ def decode_status(code, connected, grill_temp):
     return name
 
 
+def _applescript_escape(text):
+    """Escape user-influenced strings before embedding in AppleScript."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def notify(title, message):
     """Best-effort macOS notification + spoken alert. No-op elsewhere."""
+    safe_title = _applescript_escape(title)
+    safe_message = _applescript_escape(message)
     try:
         subprocess.run(
             ["osascript", "-e",
-             f'display notification "{message}" with title "{title}" sound name "Glass"'],
+             f'display notification "{safe_message}" with title "{safe_title}" sound name "Glass"'],
             capture_output=True,
         )
-        subprocess.run(["say", message], capture_output=True)
+        subprocess.run(["say", safe_message], capture_output=True)
     except FileNotFoundError:
         pass
     print("\a", end="")  # terminal bell
@@ -90,6 +97,12 @@ def _bw_session():
     if sess:
         return sess
     if os.path.exists(BW_SESSION_FILE):
+        mode = os.stat(BW_SESSION_FILE).st_mode & 0o777
+        if mode != 0o600:
+            print(
+                f"  warning: {BW_SESSION_FILE} is mode {mode:o}; "
+                "chmod 600 recommended (grants vault access)"
+            )
         with open(BW_SESSION_FILE) as f:
             return f.read().strip()
     return None
@@ -199,7 +212,8 @@ def main():
             f'  - Keychain:  security add-generic-password -a "{user}" -s {KEYCHAIN_SERVICE} -w\n'
             "  - or set TRAEGER_PASSWORD in .env"
         )
-    print(f"(password from {src})")
+    if os.environ.get("PELLET_PILOT_VERBOSE"):
+        print(f"(password from {src})")
 
     t = Traeger(user, pw)
     t.login()

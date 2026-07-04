@@ -17,6 +17,7 @@ Only reads status here (no start/stop/set-temp) -- monitoring, not control.
 """
 
 import json
+import os
 import ssl
 import threading
 import time
@@ -24,6 +25,9 @@ import urllib.parse
 
 import paho.mqtt.client as mqtt
 import requests
+
+# Cap MQTT payloads to avoid memory exhaustion from a poisoned broker message.
+_MAX_MQTT_PAYLOAD = 256 * 1024
 
 CLIENT_ID = "4id473dsrcq4kevlgrikukqn2a"  # Traeger app Cognito client (rotated; old: 2fuohjtqv1e63dckp5v84rau0j)
 COGNITO_URL = "https://cognito-idp.us-west-2.amazonaws.com/"
@@ -36,6 +40,28 @@ class TraegerError(RuntimeError):
     pass
 
 
+def _mqtt_tls_context(hostname):
+    """TLS for AWS IoT WSS. Secure by default; set TRAEGER_INSECURE_TLS=1 to opt out."""
+    if os.environ.get("TRAEGER_INSECURE_TLS", "").lower() in ("1", "true", "yes"):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    ctx = ssl.create_default_context()
+    # paho passes server_hostname on connect(); this pins verification intent.
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    return ctx
+
+
+def _clear_secret(value):
+    """Best-effort wipe of a credential string held in memory."""
+    if isinstance(value, bytearray):
+        for i in range(len(value)):
+            value[i] = 0
+    # CPython str objects are immutable; dropping references is the practical limit.
+
+
 class Traeger:
     def __init__(self, username, password):
         self.username = username
@@ -43,6 +69,11 @@ class Traeger:
         self.token = None
         self.grills = []          # list of {"thingName": ...}
         self._status = {}         # thingName -> full thing document
+
+    def clear_credentials(self):
+        """Drop password from memory after authentication."""
+        _clear_secret(self.password)
+        self.password = None
 
     # ---- REST ----------------------------------------------------------
     def login(self):
@@ -61,11 +92,13 @@ class Traeger:
             timeout=30,
         )
         if r.status_code != 200:
+            # Never echo Cognito response bodies — they can leak account/MFA hints.
             raise TraegerError(
                 f"Cognito login failed ({r.status_code}). "
-                f"Check TRAEGER_USERNAME / TRAEGER_PASSWORD. Body: {r.text[:200]}"
+                "Check TRAEGER_USERNAME / TRAEGER_PASSWORD."
             )
         self.token = r.json()["AuthenticationResult"]["IdToken"]
+        self.clear_credentials()
         return self.token
 
     def load_grills(self):
@@ -104,10 +137,7 @@ class Traeger:
         result = {}
 
         client = mqtt.Client(transport="websockets")
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        client.tls_set_context(ctx)
+        client.tls_set_context(_mqtt_tls_context(parts.hostname or parts.netloc))
         client.ws_set_options(path=f"{parts.path}?{parts.query}", headers={"Host": parts.netloc})
 
         def on_connect(c, u, flags, rc):
@@ -118,12 +148,17 @@ class Traeger:
             for g in self.grills:
                 try:
                     self._refresh_command(g["thingName"])
-                except Exception:
+                except requests.RequestException:
                     pass  # retained message may still arrive
 
         def on_message(c, u, msg):
+            if len(msg.payload) > _MAX_MQTT_PAYLOAD:
+                return
             tn = msg.topic[len("prod/thing/update/"):]
-            result[tn] = json.loads(msg.payload)
+            try:
+                result[tn] = json.loads(msg.payload)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return
             if len(result) >= len(self.grills):
                 got.set()
 
