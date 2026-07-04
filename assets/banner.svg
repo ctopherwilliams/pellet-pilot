@@ -1,57 +1,79 @@
 <svg width="1280" height="300" viewBox="0 0 1280 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pellet Pilot — real-time telemetry and cook analytics for WiFi pellet grills">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="300" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1a1512"/>
-      <stop offset="0.55" stop-color="#241a14"/>
-      <stop offset="1" stop-color="#120d0a"/>
+      <stop offset="0" stop-color="#1b1512"/>
+      <stop offset="0.5" stop-color="#221a14"/>
+      <stop offset="1" stop-color="#130e0b"/>
     </linearGradient>
     <linearGradient id="ember" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffd166"/>
       <stop offset="0.45" stop-color="#ff8c1a"/>
       <stop offset="1" stop-color="#e8461e"/>
     </linearGradient>
+    <linearGradient id="disc" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2119"/>
+      <stop offset="1" stop-color="#181009"/>
+    </linearGradient>
     <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ff7a18" stop-opacity="0.35"/>
+      <stop offset="0" stop-color="#ff7a18" stop-opacity="0.30"/>
       <stop offset="1" stop-color="#ff7a18" stop-opacity="0"/>
     </radialGradient>
-    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="5"/>
-    </filter>
+    <clipPath id="round"><rect width="1280" height="300" rx="22"/></clipPath>
   </defs>
 
-  <rect width="1280" height="300" rx="20" fill="url(#bg)"/>
-  <ellipse cx="175" cy="150" rx="165" ry="165" fill="url(#glow)"/>
+  <rect width="1280" height="300" rx="22" fill="url(#bg)"/>
 
-  <!-- flame mark -->
-  <g transform="translate(118 66)">
-    <path filter="url(#soft)" d="M66 8c14 26 4 40-6 54-8 11-10 22-2 33 12-6 18-18 19-31 12 12 21 27 21 45 0 34-27 57-59 57S-20 143 4 108c9-13 22-20 26-38 3-14-1-27-6-40 20 6 33 20 38 39 7-22 6-42-2-61 2 0 5 20 8 40z" fill="url(#ember)"/>
-    <path d="M60 96c8 10 12 20 12 31 0 17-13 29-29 29-15 0-27-11-27-27 0-11 6-20 14-28-2 14 4 23 15 25-9-16-3-26 15-33-2 12 0 3 0 3z" fill="#fff3d6" opacity="0.9"/>
+  <g clip-path="url(#round)">
+    <!-- contained glow behind the badge (no muddy bleed into the wordmark) -->
+    <ellipse cx="110" cy="150" rx="120" ry="120" fill="url(#glow)"/>
+
+    <!-- right-side live-probe curve: balances the composition, on-brand -->
+    <g opacity="0.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M934 208 L974 202 L1014 194 L1054 180 L1094 160 L1134 141 L1174 121 L1214 106 L1246 99"
+            fill="none" stroke="url(#ember)" stroke-width="3"/>
+      <g fill="#ffb454">
+        <circle cx="1014" cy="194" r="4"/>
+        <circle cx="1094" cy="160" r="4"/>
+        <circle cx="1174" cy="121" r="4"/>
+        <circle cx="1246" cy="99" r="4.5"/>
+      </g>
+    </g>
   </g>
 
-  <!-- wordmark: explicit dx gap so PELLET and PILOT never touch -->
-  <text x="360" y="138" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="82" font-weight="800" letter-spacing="-1" fill="#fff6e9">PELLET<tspan dx="30" fill="url(#ember)">PILOT</tspan></text>
+  <!-- flame badge -->
+  <g>
+    <circle cx="110" cy="150" r="62" fill="url(#disc)" stroke="#ff8c1a" stroke-width="2" stroke-opacity="0.55"/>
+    <!-- crisp flame (no blur); scaled 0.55 & translated so its measured bbox centers exactly on the disc (110,150) -->
+    <g transform="translate(84.7 103.15) scale(0.55)">
+      <path d="M66 8c14 26 4 40-6 54-8 11-10 22-2 33 12-6 18-18 19-31 12 12 21 27 21 45 0 34-27 57-59 57S-20 143 4 108c9-13 22-20 26-38 3-14-1-27-6-40 20 6 33 20 38 39 7-22 6-42-2-61 2 0 5 20 8 40z" fill="url(#ember)"/>
+      <path d="M60 96c8 10 12 20 12 31 0 17-13 29-29 29-15 0-27-11-27-27 0-11 6-20 14-28-2 14 4 23 15 25-9-16-3-26 15-33-2 12 0 3 0 3z" fill="#fff3d6"/>
+    </g>
+  </g>
+
+  <!-- wordmark (baseline 130); cap-top ~80, block centers with badge at y=150 -->
+  <text x="216" y="130" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="70" font-weight="800" letter-spacing="-1.5" fill="#fff6e9">PELLET<tspan dx="26" fill="url(#ember)">PILOT</tspan></text>
 
   <!-- tagline -->
-  <text x="362" y="188" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="25" font-weight="500" fill="#c9b8a8">Real-time telemetry &amp; cook analytics for WiFi pellet grills</text>
+  <text x="216" y="169" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="500" fill="#baa998">Real-time telemetry &amp; cook analytics for WiFi pellet grills</text>
 
-  <!-- feature pills: drawn ember dots (no emoji), generous width, clear text gap -->
-  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" letter-spacing="0.3">
+  <!-- feature pills: exact-aligned left edge (x=216), even 14px gaps -->
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="0.4">
     <g>
-      <rect x="362" y="216" width="212" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="386" cy="235" r="5" fill="url(#ember)"/>
-      <text x="402" y="241" fill="#ffb454">LIVE PROBE TRENDS</text>
+      <rect x="216" y="192" width="204" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+      <circle cx="240" cy="211" r="4.5" fill="url(#ember)"/>
+      <text x="256" y="217" fill="#ffb454">LIVE PROBE TRENDS</text>
     </g>
     <g>
-      <rect x="586" y="216" width="132" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="610" cy="235" r="5" fill="url(#ember)"/>
-      <text x="626" y="241" fill="#ffb454">COOK ETA</text>
+      <rect x="434" y="192" width="132" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+      <circle cx="458" cy="211" r="4.5" fill="url(#ember)"/>
+      <text x="474" y="217" fill="#ffb454">COOK ETA</text>
     </g>
     <g>
-      <rect x="730" y="216" width="166" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
-      <circle cx="754" cy="235" r="5" fill="url(#ember)"/>
-      <text x="770" y="241" fill="#ffb454">TEMP ALARMS</text>
+      <rect x="580" y="192" width="164" height="38" rx="19" fill="#2b211a" stroke="#3d2e22"/>
+      <circle cx="604" cy="211" r="4.5" fill="url(#ember)"/>
+      <text x="620" y="217" fill="#ffb454">TEMP ALARMS</text>
     </g>
   </g>
 
-  <text x="1244" y="284" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#6b5c4f">Unofficial · not affiliated with Traeger</text>
+  <text x="1246" y="286" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#6b5c4f">Unofficial · not affiliated with Traeger</text>
 </svg>
