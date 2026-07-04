@@ -1,0 +1,2 @@
+# Optional: PNG export for plot.py --png
+matplotlib>=3.8
