@@ -19,3 +19,4 @@ __pycache__/
 .DS_Store
 .testvenv/
 .cook_plan.json
+.probe_names.json

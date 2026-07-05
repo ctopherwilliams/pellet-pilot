@@ -24,6 +24,7 @@ import sys
 import time
 
 import plan
+import probe_names
 from alarms import notify_remote
 from forecast import describe, describe_stages, forecast, forecast_stages
 from traeger_client import Traeger, TraegerError, parse_status
@@ -193,67 +194,67 @@ def _categorize(prev, status, rate, eta_min, now):
 # which variant gets picked; every stall variant says "stalled" outright.
 
 _OPENING = [
-    "still gathering data on probe {i}, need another read or two before I can call a time",
-    "probe {i}'s too early to read yet -- gathering data before I'll guess a time",
-    "hang on, still gathering data on probe {i} -- give me a couple more readings",
+    "still gathering data on {label}, need another read or two before I can call a time",
+    "{label}'s too early to read yet -- gathering data before I'll guess a time",
+    "hang on, still gathering data on {label} -- give me a couple more readings",
 ]
 
 _DONE = [
-    "probe {i}'s there -- pull it, that one's done",
-    "that's a wrap, probe {i} hit target -- go get it",
-    "probe {i}'s cooked through -- time to pull",
+    "{label}'s there -- pull it, that one's done",
+    "that's a wrap, {label} hit target -- go get it",
+    "{label}'s cooked through -- time to pull",
 ]
 
 _NOT_RISING = [
-    "probe {i}'s holding flat at {cur} right now -- not enough climb to call a time",
-    "probe {i}'s leveled off at {cur}, outside the usual stall range -- I'll wait for it to move "
+    "{label}'s holding flat at {cur} right now -- not enough climb to call a time",
+    "{label}'s leveled off at {cur}, outside the usual stall range -- I'll wait for it to move "
     "before guessing",
-    "no real climb on probe {i} at the moment, sitting around {cur} -- too flat to call a time yet",
+    "no real climb on {label} at the moment, sitting around {cur} -- too flat to call a time yet",
 ]
 
 _ENTERING_STALL = [
-    "oh, we're stalled -- probe {i}'s sitting at {cur}, no time estimate 'til it breaks through",
-    "we just hit the stall on probe {i}, {cur} degrees and holding -- that's normal, it's pushing "
+    "oh, we're stalled -- {label}'s sitting at {cur}, no time estimate 'til it breaks through",
+    "we just hit the stall on {label}, {cur} degrees and holding -- that's normal, it's pushing "
     "moisture, no ETA for now, it's stalled",
-    "probe {i} just stalled out at {cur} -- won't fight it, just wait, no time estimate right now",
+    "{label} just stalled out at {cur} -- won't fight it, just wait, no time estimate right now",
 ]
 
 _STILL_STALLED = [
-    "probe {i}'s still stalled at {cur} -- patience, it'll break",
-    "still parked in that stall on probe {i}, {cur} degrees -- no new time yet",
-    "probe {i} hasn't budged off the stall, still {cur} -- hang in there",
+    "{label}'s still stalled at {cur} -- patience, it'll break",
+    "still parked in that stall on {label}, {cur} degrees -- no new time yet",
+    "{label} hasn't budged off the stall, still {cur} -- hang in there",
 ]
 
 _BREAKING_STALL = [
-    "good news -- probe {i} broke through the stall, climbing again, should get there in about "
+    "good news -- {label} broke through the stall, climbing again, should get there in about "
     "{eta} minutes, around {clock}",
-    "there it goes -- probe {i}'s moving again after that stall, new call is about {clock}",
-    "probe {i} pushed past the stall -- back on track, looking at about {clock}",
+    "there it goes -- {label}'s moving again after that stall, new call is about {clock}",
+    "{label} pushed past the stall -- back on track, looking at about {clock}",
 ]
 
 _FIRST_ON_TRACK = [
-    "probe {i}'s at {cur}, climbing about {rate} degrees a minute -- should get there in about "
+    "{label}'s at {cur}, climbing about {rate} degrees a minute -- should get there in about "
     "{eta} minutes, around {clock}",
-    "probe {i}'s moving along at {rate} a minute -- first call is about {clock}",
-    "probe {i}'s climbing steady, {rate} a minute -- looks like about {clock}",
+    "{label}'s moving along at {rate} a minute -- first call is about {clock}",
+    "{label}'s climbing steady, {rate} a minute -- looks like about {clock}",
 ]
 
 _NEW_ETA_SOONER = [
-    "got a new ETA -- probe {i}'s picked up speed, {rate} a minute, now looking at about {clock} instead",
-    "we're moving faster on probe {i} now -- that pulls the finish up to about {clock}",
-    "good news, probe {i} sped up -- new call is about {clock}, sooner than before",
+    "got a new ETA -- {label}'s picked up speed, {rate} a minute, now looking at about {clock} instead",
+    "we're moving faster on {label} now -- that pulls the finish up to about {clock}",
+    "good news, {label} sped up -- new call is about {clock}, sooner than before",
 ]
 
 _NEW_ETA_LATER = [
-    "got a new ETA -- probe {i}'s slowed down a touch, {rate} a minute, now looking at about {clock} instead",
-    "probe {i} eased off the pace -- that pushes the finish back to about {clock}",
-    "we're climbing slower on probe {i} now -- new call is about {clock}, a bit later than before",
+    "got a new ETA -- {label}'s slowed down a touch, {rate} a minute, now looking at about {clock} instead",
+    "{label} eased off the pace -- that pushes the finish back to about {clock}",
+    "we're climbing slower on {label} now -- new call is about {clock}, a bit later than before",
 ]
 
 _STEADY = [
-    "got a new ETA? nope -- probe {i}'s steady, {rate} a minute, still about {clock}",
-    "no change on probe {i} -- same pace, still tracking for about {clock}",
-    "probe {i}'s right on the same track -- about {clock} still looks right",
+    "got a new ETA? nope -- {label}'s steady, {rate} a minute, still about {clock}",
+    "no change on {label} -- same pace, still tracking for about {clock}",
+    "{label}'s right on the same track -- about {clock} still looks right",
 ]
 
 _BANK_BY_CATEGORY = {
@@ -265,30 +266,32 @@ _BANK_BY_CATEGORY = {
 }
 
 
-def _speech_commentary(i, n, category, status, rate, eta_min, cur, now):
-    """Pick a natural-language line for this probe's category. `n` seeds the
-    deterministic variant choice (see _pick) -- pass the update number so
-    phrasing varies tick to tick without being random.
+def _speech_commentary(i, label, n, category, status, rate, eta_min, cur, now):
+    """Pick a natural-language line for this probe's category. `label` is the
+    noun phrase to use for this probe (a user-given name via probe_names, or
+    the generic "probe N" fallback). `n` seeds the deterministic variant
+    choice (see _pick) -- pass the update number so phrasing varies tick to
+    tick without being random.
     """
     cur_i = int(cur) if cur is not None else None
     if category == "opening":
-        return _pick(_OPENING, n + i).format(i=i)
+        return _pick(_OPENING, n + i).format(label=label)
     if category == "done":
-        return _pick(_DONE, n + i).format(i=i)
+        return _pick(_DONE, n + i).format(label=label)
     if category == "not_rising":
-        return _pick(_NOT_RISING, n + i).format(i=i, cur=cur_i)
+        return _pick(_NOT_RISING, n + i).format(label=label, cur=cur_i)
     if category in ("entering_stall", "still_stalled"):
         bank = _ENTERING_STALL if category == "entering_stall" else _STILL_STALLED
-        return _pick(bank, n + i).format(i=i, cur=cur_i)
+        return _pick(bank, n + i).format(label=label, cur=cur_i)
     # on-track family: eta_min/rate are always real numbers here (see _categorize)
     clock = _fmt_clock(now, eta_min)
     eta_txt = f"{eta_min:.0f}"
     rate_txt = f"{rate:.1f}" if rate is not None else "?"
     return _pick(_BANK_BY_CATEGORY[category], n + i).format(
-        i=i, cur=cur_i, rate=rate_txt, eta=eta_txt, clock=clock)
+        label=label, cur=cur_i, rate=rate_txt, eta=eta_txt, clock=clock)
 
 
-def speech_for_probes(row, stages):
+def speech_for_probes(row, stages, names=None):
     """Build the full, ready-to-speak update for every connected probe: temp,
     next stage/target, and a commentary phrase that always says *something*
     concrete about timing (an ETA, a "still gathering data", or an explicit
@@ -298,7 +301,9 @@ def speech_for_probes(row, stages):
     that). The commentary also compares against last tick's state for this
     probe (_last_state) so it can call out what changed -- a fresh ETA, a
     stall starting or breaking -- rather than repeating a static readout.
-    Returns "" if no probe has data.
+    `names` (see probe_names.py) lets each probe be called by what's actually
+    on it ("the pork butt") instead of a bare index. Returns "" if no probe
+    has data.
     """
     now = dt.datetime.fromisoformat(row["ts"])
     parts = []
@@ -307,6 +312,7 @@ def speech_for_probes(row, stages):
         temp = row.get(f"probe{i}_temp")
         if not row.get(f"probe{i}_connected") or temp is None:
             continue
+        label = probe_names.label(i, names)
         samples = _eta_samples.get(i, [])
         if samples:
             t0 = samples[0][0]
@@ -317,7 +323,7 @@ def speech_for_probes(row, stages):
         if stages.get(i):
             nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
             if not nxt:
-                parts.append(f"probe {i} is at {int(temp)} degrees and every stage is done")
+                parts.append(f"{label} is at {int(temp)} degrees and every stage is done")
                 _last_state.pop(i, None)
                 continue
             fcs = forecast_stages(mins, temps, stages[i]) if len(temps) >= 2 else None
@@ -328,7 +334,7 @@ def speech_for_probes(row, stages):
         else:
             tgt = row.get(f"probe{i}_set")
             if not tgt:
-                parts.append(f"probe {i} is at {int(temp)} degrees")
+                parts.append(f"{label} is at {int(temp)} degrees")
                 _last_state.pop(i, None)
                 continue
             fc = forecast(mins, temps, float(tgt)) if len(temps) >= 2 else None
@@ -339,8 +345,8 @@ def speech_for_probes(row, stages):
 
         prev = _last_state.get(i)
         category, finish_at = _categorize(prev, status, rate, eta_min, now)
-        commentary = _speech_commentary(i, n, category, status, rate, eta_min, temp, now)
-        parts.append(f"probe {i} is at {int(temp)} degrees, {dest} -- {commentary}")
+        commentary = _speech_commentary(i, label, n, category, status, rate, eta_min, temp, now)
+        parts.append(f"{label} is at {int(temp)} degrees, {dest} -- {commentary}")
         _last_state[i] = {"status": status, "finish_at": finish_at}
     if not parts:
         return ""
@@ -478,7 +484,14 @@ def print_forecasts(row, stages=None):
 _STAGE_ACTIONS = {"wrap": "WRAP IT", "done": "DONE — rest it", "rest": "RESTING done"}
 
 
-def check_stage_alarms(row, stages):
+def _cap_label(probe, names):
+    """Capitalized noun phrase for a probe, for messages that start a
+    sentence (alarms) rather than sitting mid-utterance (speech commentary)."""
+    phrase = probe_names.label(probe, names)
+    return phrase[0].upper() + phrase[1:]
+
+
+def check_stage_alarms(row, stages, names=None):
     """Fire a labeled alarm once when a probe crosses each stage temp."""
     for probe, stagelist in stages.items():
         temp = row.get(f"probe{probe}_temp")
@@ -489,13 +502,13 @@ def check_stage_alarms(row, stages):
             if temp >= stemp and key not in _fired:
                 _fired.add(key)
                 action = _STAGE_ACTIONS.get(label.lower(), label.upper())
-                msg = f"Probe {probe} hit {int(stemp)}° — {action}"
+                msg = f"{_cap_label(probe, names)} hit {int(stemp)}° — {action}"
                 notify("Traeger stage", msg)
                 notify_remote("Traeger stage", msg)
                 print(f"  🔔 STAGE: probe {probe} {int(stemp)}° — {action}")
 
 
-def check_alarms(row, alarms):
+def check_alarms(row, alarms, names=None):
     """Fire once when a probe rises to/through each of its thresholds.
 
     `alarms` maps a 1-based probe index to an iterable of threshold temps.
@@ -508,13 +521,13 @@ def check_alarms(row, alarms):
             key = (probe, thr)
             if temp >= thr and key not in _fired:
                 _fired.add(key)
-                msg = f"Probe {probe} reached {int(thr)}°F (now {int(temp)}°F)"
+                msg = f"{_cap_label(probe, names)} reached {int(thr)}°F (now {int(temp)}°F)"
                 notify("Traeger probe", msg)          # local desktop/voice
                 notify_remote("Traeger probe", msg)   # Pushover/ntfy/webhook, if configured
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1):
+def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1, names=None):
     alarms = alarms or {}
     stages = stages or {}
     status = t.poll()
@@ -537,7 +550,7 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
         if speak_every_tick:
-            text = speech_for_probes(row, stages)  # full sentence, incl. "Update N" + grill temp
+            text = speech_for_probes(row, stages, names)  # full sentence, incl. "Update N" + grill temp
             if text:
                 speak(text)
         if chart_path:
@@ -550,7 +563,7 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
             except Exception as e:
                 print(f"  chart write skipped: {e}")
         if stages:
-            check_stage_alarms(row, stages)
+            check_stage_alarms(row, stages, names)
         # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
         active = alarms
         if not active and not stages:
@@ -558,7 +571,7 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
                       for i in range(1, MAX_PROBES + 1)
                       if row.get(f"probe{i}_connected") and row.get(f"probe{i}_set")}
         if active:
-            check_alarms(row, active)
+            check_alarms(row, active, names)
 
 
 def resolve_password(user):
@@ -675,6 +688,21 @@ def main():
                          for p, s in sorted(stages.items()))
         print(f"Cook plan — {desc}")
 
+    # Probe names: --probe-name [PROBE:]NAME and/or PROBE_NAMES env; persisted
+    # to .probe_names.json so spoken/alarm text says "the pork butt" instead
+    # of a bare "probe 1" across --watch runs, same pattern as --stage above.
+    name_specs = [sys.argv[j + 1] for j, a in enumerate(sys.argv)
+                  if a == "--probe-name" and j + 1 < len(sys.argv)]
+    name_specs += (os.environ.get("PROBE_NAMES") or "").split(",")
+    names = probe_names.build_names(name_specs)
+    if names:
+        probe_names.save_names(names)
+    else:
+        names = probe_names.load_names()  # reuse persisted names if none given
+    if names:
+        desc = "; ".join(f"P{p}: {n}" for p, n in sorted(names.items()))
+        print(f"Probe names — {desc}")
+
     # Spoken updates every tick (not just alarm/stage crossings): --speak or
     # PELLET_PILOT_SPEAK=1. Off by default so it doesn't talk over you unasked.
     speak_every_tick = "--speak" in sys.argv or \
@@ -696,7 +724,8 @@ def main():
         print(f"Writing a live chart to {chart_path} every tick -- open it once and leave it.")
 
     if interval is None:
-        one_shot(t, alarms, stages, speak_every_tick, chart_path, chart_probe)
+        one_shot(t, alarms, stages, speak_every_tick,
+                 chart_path=chart_path, chart_probe=chart_probe, names=names)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
@@ -704,7 +733,8 @@ def main():
     try:
         while True:
             try:
-                one_shot(t, alarms, stages, speak_every_tick, chart_path, chart_probe)
+                one_shot(t, alarms, stages, speak_every_tick,
+                         chart_path=chart_path, chart_probe=chart_probe, names=names)
                 consecutive_failures = 0
                 time.sleep(interval)
             except Exception as e:
