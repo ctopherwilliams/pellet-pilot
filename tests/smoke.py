@@ -11,6 +11,7 @@ mocked HTTP responses).
 import datetime as dt
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -593,50 +594,136 @@ def test_speak_every_tick():
     orig_append, poll.append = poll.append, lambda row: None  # avoid writing cook_log.csv
     poll._eta_samples.clear()
     poll._fired.clear()
+    poll._last_state.clear()
     try:
         poll.one_shot(_FakeTraeger(), speak_every_tick=False)
         assert spoken == [], "must stay silent when speak_every_tick is off"
         poll.one_shot(_FakeTraeger(), speak_every_tick=True)
         assert len(spoken) == 1, spoken
         assert "168" in spoken[0] and "205" in spoken[0], spoken
+        assert spoken[0].startswith("Update "), spoken  # "Update N", not "Tick"
     finally:
         poll.speak, poll.append = orig_speak, orig_append
 
 
 def test_speech_for_probes_stage_aware():
     poll._eta_samples.clear()
+    poll._last_state.clear()
     now = dt.datetime(2026, 7, 4, 12, 0, 0)
     row = {"ts": now.isoformat(), "probe1_temp": 168, "probe1_connected": True, "probe1_set": 205,
            "probe2_temp": 210, "probe2_connected": True, "probe2_set": 205}
     text_no_stages = poll.speech_for_probes(row, {})
-    assert "target 205" in text_no_stages, text_no_stages
+    assert "targeting 205" in text_no_stages, text_no_stages
     text_staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
-    assert "next wrap" not in text_staged  # 168 already past 165 -> next stage is done
-    assert "next done at 205" in text_staged, text_staged
+    assert "heading to wrap" not in text_staged  # 168 already past 165 -> next stage is done
+    assert "heading to done at 205" in text_staged, text_staged
+
+
+_CLOCK_RE = re.compile(r"\d{1,2}:\d{2} [AP]M")
 
 
 def test_speech_for_probes_includes_eta():
     # The spoken update must carry an ETA computed the same way as the printed
-    # prediction (recent-window forecast), not just bare temp/target.
+    # prediction (recent-window forecast), not just bare temp/target. Wording
+    # is now variable (a bank of natural phrasings, not one fixed template),
+    # so assert on the underlying guarantee -- a real clock time is present --
+    # rather than one exact sentence.
     poll._eta_samples.clear()
+    poll._last_state.clear()
     t0 = dt.datetime(2026, 7, 4, 12, 0, 0)
     t1 = t0 + dt.timedelta(minutes=10)
     poll._eta_samples[1] = [(t0, 150.0), (t1, 160.0)]  # +1 deg/min
     row = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
 
     text = poll.speech_for_probes(row, {})
-    assert "target 205" in text, text
-    assert "minutes away" in text and "around" in text, text  # (205-160)/1 = 45 min
+    assert "targeting 205" in text, text
+    assert _CLOCK_RE.search(text), text  # (205-160)/1 = 45 min -> a real clock time, always present
 
     staged = poll.speech_for_probes(row, {1: [(165.0, "wrap"), (205.0, "done")]})
-    assert "next wrap at 165" in staged, staged
-    assert "minutes away" in staged, staged  # (165-160)/1 = 5 min
+    assert "heading to wrap at 165" in staged, staged
+    assert _CLOCK_RE.search(staged), staged  # (165-160)/1 = 5 min -> different, still a real clock time
 
-    # a stalled probe must NOT get a fabricated ETA
+    # a stalled probe must NOT get a fabricated minutes-ETA -- but must still
+    # say so explicitly, never silently blank.
     poll._eta_samples[1] = [(t0, 160.0), (t1, 160.0)]  # flat
     row2 = {"ts": t1.isoformat(), "probe1_temp": 160, "probe1_connected": True, "probe1_set": 205}
     flat_text = poll.speech_for_probes(row2, {})
-    assert "minutes away" not in flat_text, flat_text
+    assert "stalled" in flat_text, flat_text
+    assert not _CLOCK_RE.search(flat_text), flat_text  # no fabricated clock time through a stall
+
+
+def test_speech_for_probes_eta_never_blank():
+    # The whole point of --speak: the ETA/status phrase must always be present,
+    # even on the very first-ever sample (insufficient data), never silently
+    # dropped like it used to be.
+    poll._eta_samples.clear()
+    poll._last_state.clear()
+    now = dt.datetime(2026, 7, 4, 12, 0, 0)
+    row = {"ts": now.isoformat(), "probe1_temp": 140, "probe1_connected": True, "probe1_set": 205}
+    text = poll.speech_for_probes(row, {})  # first-ever sample: only 1 point so far
+    assert text.endswith(".") and "--" in text, text
+    after_dash = text.split("--", 1)[1]
+    assert after_dash.strip() not in ("", "."), f"ETA phrase must not be blank: {text!r}"
+    assert "gathering data" in text, text
+
+
+def test_speech_for_probes_update_numbering():
+    # "Update N", not "Tick N" -- increments across calls within a run.
+    poll._eta_samples.clear()
+    poll._last_state.clear()
+    poll._update_count = 0
+    row = {"ts": dt.datetime(2026, 7, 4, 12, 0).isoformat(),
+           "probe1_temp": 150, "probe1_connected": True, "probe1_set": 205}
+    first = poll.speech_for_probes(row, {})
+    second = poll.speech_for_probes(row, {})
+    assert first.startswith("Update 1."), first
+    assert second.startswith("Update 2."), second
+    assert "Tick" not in first and "Tick" not in second
+
+
+def test_categorize_stall_transitions_and_new_eta():
+    # The core of the "natural, comparative" announcement feature: narrate
+    # what CHANGED tick-to-tick -- a stall starting/breaking, and whether the
+    # projected finish *clock time* actually moved (not just eta_min ticking
+    # down, which happens every tick even at a constant rate).
+    now = dt.datetime(2026, 7, 4, 12, 0, 0)
+
+    cat, finish = poll._categorize(None, "on_track", 1.0, 45.0, now)
+    assert cat == "first_on_track" and finish is not None, (cat, finish)
+
+    prev = {"status": "on_track", "finish_at": finish}
+    cat2, _ = poll._categorize(prev, "on_track", 1.0, 44.0, now + dt.timedelta(minutes=1))
+    assert cat2 == "steady", cat2  # finish clock barely moved -> steady, even though eta_min dropped
+
+    cat3, fin3 = poll._categorize(prev, "stalled", 0.0, None, now)
+    assert cat3 == "entering_stall" and fin3 is None, (cat3, fin3)
+
+    cat4, _ = poll._categorize({"status": "stalled", "finish_at": None}, "stalled", 0.0, None, now)
+    assert cat4 == "still_stalled", cat4
+
+    cat5, fin5 = poll._categorize({"status": "stalled", "finish_at": None}, "on_track", 2.0, 10.0, now)
+    assert cat5 == "breaking_stall" and fin5 is not None, (cat5, fin5)
+
+    later_prev = {"status": "on_track", "finish_at": now}
+    cat6, _ = poll._categorize(later_prev, "on_track", 0.5, 30.0, now)  # finishes 30 min after prev
+    assert cat6 == "new_eta_later", cat6
+
+    sooner_prev = {"status": "on_track", "finish_at": now + dt.timedelta(minutes=60)}
+    cat7, _ = poll._categorize(sooner_prev, "on_track", 2.0, 5.0, now)  # finishes way before prev
+    assert cat7 == "new_eta_sooner", cat7
+
+
+def test_speech_commentary_deterministic_not_random():
+    # Variant choice must be deterministic (cycled by update/probe index), not
+    # random.choice -- otherwise this can't be tested or reasoned about during
+    # a live cook. Same inputs -> same output, and cycling through `n` visits
+    # more than one variant.
+    now = dt.datetime(2026, 7, 4, 12, 0, 0)
+    a = poll._speech_commentary(1, 3, "steady", "on_track", 1.2, 20.0, 180, now)
+    b = poll._speech_commentary(1, 3, "steady", "on_track", 1.2, 20.0, 180, now)
+    assert a == b, (a, b)
+    variants = {poll._speech_commentary(1, k, "steady", "on_track", 1.2, 20.0, 180, now) for k in range(6)}
+    assert len(variants) >= 2, variants
 
 
 def test_backoff_seconds():

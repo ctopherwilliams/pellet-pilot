@@ -114,31 +114,195 @@ def speak(text):
         pass
 
 
-def _speech_eta(status, eta_min, now):
-    """Spoken ETA fragment appended after the target/stage phrase.
+_update_count = 0
 
-    Mirrors the same recent-window, stall-aware forecast used for the printed
-    prediction (see print_forecasts/forecast) -- never invents an ETA through
-    a stall.
+# Per-probe memory of the last tick's status + projected finish time, so the
+# spoken update can narrate what CHANGED (a new ETA, a stall starting/ending)
+# instead of reading the same flat template every ten seconds. Keyed by
+# 1-based probe index; cleared implicitly whenever a probe stops reporting
+# forecastable data (see speech_for_probes).
+_last_state = {}
+
+_ETA_EPS_MIN = 3.0  # minutes -- a smaller swing in the *finish clock* than this reads as "steady"
+
+
+def _next_update_number():
+    """Incrementing counter for spoken updates, e.g. "Update 12" -- not tied
+    to poll count, so it stays meaningful even across a re-auth or a tick
+    that had nothing new to say."""
+    global _update_count
+    _update_count += 1
+    return _update_count
+
+
+def _fmt_clock(now, eta_min):
+    return (now + dt.timedelta(minutes=eta_min)).strftime("%-I:%M %p")
+
+
+def _pick(bank, key):
+    """Deterministic phrasing choice -- cycles through variants by tick/probe
+    index rather than random.choice, so the same inputs always produce the
+    same output (required for tests, and for sane debugging of a live cook).
     """
-    if status == "on_track" and eta_min is not None:
-        clock = ""
-        if now is not None:
-            clock = f", around {(now + dt.timedelta(minutes=eta_min)).strftime('%-I:%M %p')}"
-        return f", about {eta_min:.0f} minutes away{clock}"
+    return bank[key % len(bank)]
+
+
+def _categorize(prev, status, rate, eta_min, now):
+    """Classify this tick relative to the PREVIOUS tick for this probe.
+
+    The interesting thing to say out loud isn't "here's the ETA" (that's
+    covered by every branch already) -- it's whether anything actually
+    changed: did the stall just start or just break, did the projected finish
+    *clock time* actually move, or is it holding steady. Comparing finish
+    clock times (not raw eta_min) is deliberate: eta_min counts down every
+    tick even at a perfectly constant rate, since the probe is simply closer
+    to target -- that's not a "new ETA", it's just time passing.
+
+    Returns (category, finish_at) -- finish_at is the absolute predicted-done
+    time to remember for next tick's comparison, or None when this tick has
+    no on-track ETA (nothing to compare against later).
+    """
+    prev_status = prev.get("status") if prev else None
+    if status in ("insufficient", "no_target"):
+        return "opening", None
+    if status == "done":
+        return "done", None
+    if status == "not_rising":
+        return "not_rising", None
     if status == "stalled":
-        return ", but it's stalled, no estimate right now"
-    return ""
+        return ("still_stalled" if prev_status == "stalled" else "entering_stall"), None
+    # status == "on_track" -- forecast()/forecast_stages() guarantee eta_min is not None here.
+    finish_at = now + dt.timedelta(minutes=eta_min)
+    if prev_status == "stalled":
+        return "breaking_stall", finish_at
+    prev_finish = prev.get("finish_at") if prev else None
+    if prev_finish is None:
+        return "first_on_track", finish_at
+    delta_min = (finish_at - prev_finish).total_seconds() / 60
+    if delta_min <= -_ETA_EPS_MIN:
+        return "new_eta_sooner", finish_at
+    if delta_min >= _ETA_EPS_MIN:
+        return "new_eta_later", finish_at
+    return "steady", finish_at
+
+
+# ---- phrasing banks -----------------------------------------------------
+# Warm, plainspoken pitmaster voice -- a few natural variants per situation,
+# not one fixed template. Every on-track-family variant names the {clock}
+# time so the headline feature (never silently drop the ETA) holds no matter
+# which variant gets picked; every stall variant says "stalled" outright.
+
+_OPENING = [
+    "still gathering data on probe {i}, need another read or two before I can call a time",
+    "probe {i}'s too early to read yet -- gathering data before I'll guess a time",
+    "hang on, still gathering data on probe {i} -- give me a couple more readings",
+]
+
+_DONE = [
+    "probe {i}'s there -- pull it, that one's done",
+    "that's a wrap, probe {i} hit target -- go get it",
+    "probe {i}'s cooked through -- time to pull",
+]
+
+_NOT_RISING = [
+    "probe {i}'s holding flat at {cur} right now -- not enough climb to call a time",
+    "probe {i}'s leveled off at {cur}, outside the usual stall range -- I'll wait for it to move "
+    "before guessing",
+    "no real climb on probe {i} at the moment, sitting around {cur} -- too flat to call a time yet",
+]
+
+_ENTERING_STALL = [
+    "oh, we're stalled -- probe {i}'s sitting at {cur}, no time estimate 'til it breaks through",
+    "we just hit the stall on probe {i}, {cur} degrees and holding -- that's normal, it's pushing "
+    "moisture, no ETA for now, it's stalled",
+    "probe {i} just stalled out at {cur} -- won't fight it, just wait, no time estimate right now",
+]
+
+_STILL_STALLED = [
+    "probe {i}'s still stalled at {cur} -- patience, it'll break",
+    "still parked in that stall on probe {i}, {cur} degrees -- no new time yet",
+    "probe {i} hasn't budged off the stall, still {cur} -- hang in there",
+]
+
+_BREAKING_STALL = [
+    "good news -- probe {i} broke through the stall, climbing again, should get there in about "
+    "{eta} minutes, around {clock}",
+    "there it goes -- probe {i}'s moving again after that stall, new call is about {clock}",
+    "probe {i} pushed past the stall -- back on track, looking at about {clock}",
+]
+
+_FIRST_ON_TRACK = [
+    "probe {i}'s at {cur}, climbing about {rate} degrees a minute -- should get there in about "
+    "{eta} minutes, around {clock}",
+    "probe {i}'s moving along at {rate} a minute -- first call is about {clock}",
+    "probe {i}'s climbing steady, {rate} a minute -- looks like about {clock}",
+]
+
+_NEW_ETA_SOONER = [
+    "got a new ETA -- probe {i}'s picked up speed, {rate} a minute, now looking at about {clock} instead",
+    "we're moving faster on probe {i} now -- that pulls the finish up to about {clock}",
+    "good news, probe {i} sped up -- new call is about {clock}, sooner than before",
+]
+
+_NEW_ETA_LATER = [
+    "got a new ETA -- probe {i}'s slowed down a touch, {rate} a minute, now looking at about {clock} instead",
+    "probe {i} eased off the pace -- that pushes the finish back to about {clock}",
+    "we're climbing slower on probe {i} now -- new call is about {clock}, a bit later than before",
+]
+
+_STEADY = [
+    "got a new ETA? nope -- probe {i}'s steady, {rate} a minute, still about {clock}",
+    "no change on probe {i} -- same pace, still tracking for about {clock}",
+    "probe {i}'s right on the same track -- about {clock} still looks right",
+]
+
+_BANK_BY_CATEGORY = {
+    "breaking_stall": _BREAKING_STALL,
+    "first_on_track": _FIRST_ON_TRACK,
+    "new_eta_sooner": _NEW_ETA_SOONER,
+    "new_eta_later": _NEW_ETA_LATER,
+    "steady": _STEADY,
+}
+
+
+def _speech_commentary(i, n, category, status, rate, eta_min, cur, now):
+    """Pick a natural-language line for this probe's category. `n` seeds the
+    deterministic variant choice (see _pick) -- pass the update number so
+    phrasing varies tick to tick without being random.
+    """
+    cur_i = int(cur) if cur is not None else None
+    if category == "opening":
+        return _pick(_OPENING, n + i).format(i=i)
+    if category == "done":
+        return _pick(_DONE, n + i).format(i=i)
+    if category == "not_rising":
+        return _pick(_NOT_RISING, n + i).format(i=i, cur=cur_i)
+    if category in ("entering_stall", "still_stalled"):
+        bank = _ENTERING_STALL if category == "entering_stall" else _STILL_STALLED
+        return _pick(bank, n + i).format(i=i, cur=cur_i)
+    # on-track family: eta_min/rate are always real numbers here (see _categorize)
+    clock = _fmt_clock(now, eta_min)
+    eta_txt = f"{eta_min:.0f}"
+    rate_txt = f"{rate:.1f}" if rate is not None else "?"
+    return _pick(_BANK_BY_CATEGORY[category], n + i).format(
+        i=i, cur=cur_i, rate=rate_txt, eta=eta_txt, clock=clock)
 
 
 def speech_for_probes(row, stages):
-    """Build a short spoken summary of every connected probe: temp, next
-    stage/target, and an ETA -- using the same live sample buffer and forecast
+    """Build the full, ready-to-speak update for every connected probe: temp,
+    next stage/target, and a commentary phrase that always says *something*
+    concrete about timing (an ETA, a "still gathering data", or an explicit
+    stall/no-estimate) -- using the same live sample buffer and forecast
     logic that drives the printed prediction (print_forecasts must have run
-    first this tick so _eta_samples is up to date; one_shot() guarantees that).
+    first this tick so _eta_samples is up to date; one_shot() guarantees
+    that). The commentary also compares against last tick's state for this
+    probe (_last_state) so it can call out what changed -- a fresh ETA, a
+    stall starting or breaking -- rather than repeating a static readout.
+    Returns "" if no probe has data.
     """
     now = dt.datetime.fromisoformat(row["ts"])
     parts = []
+    n = _next_update_number()
     for i in range(1, MAX_PROBES + 1):
         temp = row.get(f"probe{i}_temp")
         if not row.get(f"probe{i}_connected") or temp is None:
@@ -153,25 +317,36 @@ def speech_for_probes(row, stages):
         if stages.get(i):
             nxt = next(((t_, lbl) for t_, lbl in stages[i] if temp < t_), None)
             if not nxt:
-                parts.append(f"probe {i}, {int(temp)} degrees, all stages done")
+                parts.append(f"probe {i} is at {int(temp)} degrees and every stage is done")
+                _last_state.pop(i, None)
                 continue
-            eta = ""
-            if len(temps) >= 2:
-                fcs = forecast_stages(mins, temps, stages[i])
-                if fcs["next"]:
-                    eta = _speech_eta(fcs["next"]["status"], fcs["next"]["eta_min"], now)
-            parts.append(f"probe {i}, {int(temp)} degrees, next {nxt[1]} at {int(nxt[0])}{eta}")
+            fcs = forecast_stages(mins, temps, stages[i]) if len(temps) >= 2 else None
+            status = fcs["next"]["status"] if fcs and fcs["next"] else "insufficient"
+            eta_min = fcs["next"]["eta_min"] if fcs and fcs["next"] else None
+            rate = fcs["rate"] if fcs else None
+            dest = f"heading to {nxt[1]} at {int(nxt[0])}"
         else:
             tgt = row.get(f"probe{i}_set")
             if not tgt:
-                parts.append(f"probe {i}, {int(temp)} degrees")
+                parts.append(f"probe {i} is at {int(temp)} degrees")
+                _last_state.pop(i, None)
                 continue
-            eta = ""
-            if len(temps) >= 2:
-                fc = forecast(mins, temps, float(tgt))
-                eta = _speech_eta(fc["status"], fc["eta_min"], now)
-            parts.append(f"probe {i}, {int(temp)} degrees, target {int(float(tgt))}{eta}")
-    return ". ".join(parts)
+            fc = forecast(mins, temps, float(tgt)) if len(temps) >= 2 else None
+            status = fc["status"] if fc else "insufficient"
+            eta_min = fc["eta_min"] if fc else None
+            rate = fc["rate"] if fc else None
+            dest = f"targeting {int(float(tgt))}"
+
+        prev = _last_state.get(i)
+        category, finish_at = _categorize(prev, status, rate, eta_min, now)
+        commentary = _speech_commentary(i, n, category, status, rate, eta_min, temp, now)
+        parts.append(f"probe {i} is at {int(temp)} degrees, {dest} -- {commentary}")
+        _last_state[i] = {"status": status, "finish_at": finish_at}
+    if not parts:
+        return ""
+    grill = row.get("grill")
+    grill_phrase = f" Grill is at {int(float(grill))} degrees." if grill not in (None, "", "None") else ""
+    return f"Update {n}. " + ". ".join(parts) + f".{grill_phrase}"
 
 
 def load_env():
@@ -362,9 +537,9 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
         print(f"[{row['ts']}] grill {row['grill']}° (set {row['set']}°)  {probes_txt}  [{state}]")
         print_forecasts(row, stages)  # live "when's it done" prediction (stage-aware)
         if speak_every_tick:
-            text = speech_for_probes(row, stages)
+            text = speech_for_probes(row, stages)  # full sentence, incl. "Update N" + grill temp
             if text:
-                speak(f"Update. {text}. Grill {int(row['grill'])} degrees.")
+                speak(text)
         if chart_path:
             # Local import: plot.py imports MAX_PROBES from this module, so a
             # top-level `import plot` here would be circular. Best-effort --
