@@ -254,6 +254,24 @@ Syntax is `[PROBE:]NAME` (bare name → probe 1, e.g. `--probe-name 2:brisket` f
 probe 2). Set once and it's remembered across `--watch` runs (saved to a gitignored
 `.probe_names.json`).
 
+### Wrap Coach — should you wrap now?
+
+Rule-based, mid-cook advice on whether to hold for more bark or wrap to push through —
+no ML, no network, just the same recent-window forecast and stall band already driving
+the ETA:
+
+```bash
+./venv/bin/python poll.py --watch 30 --coach --stage 165:wrap --stage 203:done
+```
+
+```text
+  🟡 the pork butt: 47 minutes into the stall -- normal, bark's still setting. Hold for more bark, or wrap now to push through faster.
+```
+
+It escalates ("🔴 urgent") past ~90 minutes in a single continuous stall, and knows
+the difference between "still stalled, not wrapped yet" and "wrapped and *still*
+stalled" (the latter suggests bumping the grill temp instead of wrapping again).
+
 ---
 
 ## 🔐 Credentials
