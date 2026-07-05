@@ -14,9 +14,11 @@ nohup.out
 venv/
 __pycache__/
 *.pyc
+*.egg-info/
 
 # os
 .DS_Store
 .testvenv/
 .cook_plan.json
 .probe_names.json
+.cook_notes.json
