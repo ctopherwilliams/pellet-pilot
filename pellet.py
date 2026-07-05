@@ -9,6 +9,7 @@ Usage:
   pellet history [...history.py flags...]              # browse past cooks
   pellet trend [...trend.py flags...]                  # rate-of-rise analysis
   pellet chart [...plot.py flags...]                   # render a cook chart
+  pellet report [...report.py flags...]                # shareable self-contained Cook Report HTML
   pellet export [...export.py flags...]                # Grafana-ingestible export
   pellet presets                                        # list available --preset names
 
@@ -84,13 +85,19 @@ def main():
         plot.main()
         return
 
+    if cmd == "report":
+        import report
+        sys.argv = ["pellet report"] + rest
+        report.main()
+        return
+
     if cmd == "export":
         import export
         sys.argv = ["pellet export"] + rest
         export.main()
         return
 
-    sys.exit(f"Unknown command {cmd!r}. Try: watch, history, trend, chart, export, presets, --help")
+    sys.exit(f"Unknown command {cmd!r}. Try: watch, history, trend, chart, report, export, presets, --help")
 
 
 if __name__ == "__main__":
