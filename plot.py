@@ -100,10 +100,39 @@ def render_svg(sess, only_probe=None):
     return "\n".join(p)
 
 
-def html_wrap(svg, title):
-    return (f"<!doctype html><meta charset=utf-8><title>{_html.escape(title)}</title>"
+def html_wrap(svg, title, refresh=None):
+    """Wrap an SVG as a standalone HTML page. `refresh`, if given, adds a
+    <meta refresh> so a browser tab left open reloads itself every N seconds
+    -- no server required. Default (None) is unchanged from before."""
+    meta_refresh = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
+    return (f"<!doctype html><meta charset=utf-8>{meta_refresh}<title>{_html.escape(title)}</title>"
             "<body style='margin:0;background:#0d0b09;display:flex;justify-content:center'>"
             f"<div style='max-width:960px;width:100%'>{svg}</div>")
+
+
+def write_chart(path, probe, stages=None, refresh=30):
+    """Render the current forecast chart and write it to `path` as a
+    self-refreshing HTML file -- the "set it and forget it" chart: open it
+    once in a browser and it keeps showing the latest data on its own, no
+    server or manual re-run needed. Meant to be called once per --watch tick.
+
+    Writes atomically (temp file + os.replace) so a browser mid-reload never
+    sees a half-written file. Returns False (no-op) if there isn't yet enough
+    data to plot.
+    """
+    rows = load_rows()
+    if len(rows) < 2:
+        return False
+    try:
+        svg = render_forecast_svg(rows, probe, stages or {})
+    except ValueError:
+        return False  # not enough clean data for this probe yet -- try again next tick
+    html = html_wrap(svg, "Pellet Pilot — live cook", refresh=refresh)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(html)
+    os.replace(tmp, path)
+    return True
 
 
 def render_png(sess, out, only_probe=None):
@@ -186,7 +215,10 @@ def render_forecast_svg(sess, probe, stages=None):
     xs = [(r["_ts"] - t0).total_seconds() / 60 for r in sess]
     cx, cy, events = clean_and_events(xs, [_num(r.get(f"probe{probe}_temp")) for r in sess])
     if len(cy) < 2:
-        sys.exit(f"Not enough probe {probe} data to plot.")
+        # Raise, don't sys.exit(): this is called every --watch tick from
+        # write_chart(); exiting the interpreter here would kill the whole
+        # long-running cook logger, not just this one render.
+        raise ValueError(f"Not enough probe {probe} data to plot.")
 
     plist = sorted(stages.get(probe, []))
     if plist:
@@ -277,7 +309,10 @@ def main():
         render_png(sess, out, only_probe)
     else:
         if only_probe is not None:  # single meat probe -> annotated forecast chart
-            svg = render_forecast_svg(sess, only_probe, plan.load_plan())
+            try:
+                svg = render_forecast_svg(sess, only_probe, plan.load_plan())
+            except ValueError as e:
+                sys.exit(str(e))
         else:
             svg = render_svg(sess, only_probe)
         if "--html" in argv:

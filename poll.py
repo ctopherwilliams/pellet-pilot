@@ -6,6 +6,10 @@ Usage:
   ./venv/bin/python poll.py            # one reading, printed + logged
   ./venv/bin/python poll.py --watch 30 # log every 30s until Ctrl-C
   ./venv/bin/python poll.py --watch 30 --speak  # + a spoken update every tick
+  ./venv/bin/python poll.py --watch 30 --speak --stage 165:wrap --stage 205:done \
+      --chart cook.html    # set it and forget it: logs, speaks, and keeps a
+                            # self-refreshing chart at cook.html up to date --
+                            # open that file once in a browser and walk away.
 
 Credentials come from environment or a local .env file (see .env.example):
   TRAEGER_USERNAME, TRAEGER_PASSWORD
@@ -335,7 +339,7 @@ def check_alarms(row, alarms):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
-def one_shot(t, alarms=None, stages=None, speak_every_tick=False):
+def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1):
     alarms = alarms or {}
     stages = stages or {}
     status = t.poll()
@@ -361,6 +365,15 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False):
             text = speech_for_probes(row, stages)
             if text:
                 speak(f"Update. {text}. Grill {int(row['grill'])} degrees.")
+        if chart_path:
+            # Local import: plot.py imports MAX_PROBES from this module, so a
+            # top-level `import plot` here would be circular. Best-effort --
+            # a chart-write hiccup must never interrupt the cook log.
+            try:
+                import plot
+                plot.write_chart(chart_path, chart_probe, stages)
+            except Exception as e:
+                print(f"  chart write skipped: {e}")
         if stages:
             check_stage_alarms(row, stages)
         # plain alarms: explicit --alarm, else auto-arm probe targets (unless stages cover it)
@@ -494,8 +507,21 @@ def main():
     if speak_every_tick:
         print("Speaking an update every tick (--speak).")
 
+    # Set-it-and-forget-it chart: --chart PATH (or PELLET_PILOT_CHART) rewrites
+    # a self-refreshing HTML forecast chart every tick -- open it once in a
+    # browser and walk away, no server required (see plot.write_chart).
+    chart_path = None
+    if "--chart" in sys.argv:
+        i = sys.argv.index("--chart")
+        chart_path = sys.argv[i + 1] if i + 1 < len(sys.argv) else "cook.html"
+    chart_path = chart_path or os.environ.get("PELLET_PILOT_CHART")
+    chart_probe = int(sys.argv[sys.argv.index("--chart-probe") + 1]) \
+        if "--chart-probe" in sys.argv else 1
+    if chart_path:
+        print(f"Writing a live chart to {chart_path} every tick -- open it once and leave it.")
+
     if interval is None:
-        one_shot(t, alarms, stages, speak_every_tick)
+        one_shot(t, alarms, stages, speak_every_tick, chart_path, chart_probe)
         return
 
     print(f"Watching every {interval}s. Ctrl-C to stop.")
@@ -503,7 +529,7 @@ def main():
     try:
         while True:
             try:
-                one_shot(t, alarms, stages, speak_every_tick)
+                one_shot(t, alarms, stages, speak_every_tick, chart_path, chart_probe)
                 consecutive_failures = 0
                 time.sleep(interval)
             except Exception as e:
