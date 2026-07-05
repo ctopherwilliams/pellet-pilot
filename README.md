@@ -483,12 +483,12 @@ probes, local + remote alarms, cook history, charts with projected finish
 times, a shareable Cook Report, a unified CLI with presets, and Grafana
 export. Here's where it can go next:
 
-- [ ] **`history.py compare A B`** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
-- [ ] **Publish to PyPI** — `pellet` already works via `pip install -e .`; a real release would drop the "clone + venv" step for non-developers
-- [ ] **Interactive Cognito MFA/challenge support at login** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
-- [ ] **Per-grill filtering** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
-- [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick or add quiet hours
-- [ ] **Wrap Coach using grill temp too** — advice is currently probe-only; factoring in grill temp/lid-open drops could catch more (e.g. a temp swing from a lid check, not a real stall break)
+- [ ] **[`history.py compare A B`](https://github.com/ctopherwilliams/pellet-pilot/issues/20)** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
+- [ ] **[Publish to PyPI](https://github.com/ctopherwilliams/pellet-pilot/issues/21)** — `pellet` already works via `pip install -e .`; a real release would drop the "clone + venv" step for non-developers
+- [ ] **[Interactive Cognito MFA/challenge support at login](https://github.com/ctopherwilliams/pellet-pilot/issues/22)** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
+- [ ] **[Per-grill filtering](https://github.com/ctopherwilliams/pellet-pilot/issues/23)** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
+- [ ] **[Voice-update pacing](https://github.com/ctopherwilliams/pellet-pilot/issues/24)** — `--speak` announces every tick by design; a future option to summarize every Nth tick or add quiet hours
+- [ ] **[Wrap Coach using grill temp too](https://github.com/ctopherwilliams/pellet-pilot/issues/25)** — advice is currently probe-only; factoring in grill temp/lid-open drops could catch more (e.g. a temp swing from a lid check, not a real stall break)
 
 Have an idea? Open an issue — with the `autofix` label, this repo can draft its own fix.
 
