@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <b>Real-time telemetry, live probe trend lines, cook ETAs, and temperature alarms for WiFi pellet grills.</b><br>
-  <sub>Pull grill &amp; probe temps straight from the cloud · analyze your cook right in the terminal.</sub>
+  <b>The pitmaster co-pilot for your WiFi pellet grill.</b><br>
+  <sub>Live ETAs, stall detection, a coach that tells you when to wrap, and a report to show off the results — all from the terminal.</sub>
 </p>
 
 <p align="center">
@@ -16,7 +16,13 @@
 </p>
 
 > [!IMPORTANT]
-> **Unofficial project.** Pellet Pilot is an independent, community-built tool. It is **not affiliated with, endorsed by, or sponsored by Traeger Inc.** "Traeger" and "WiFIRE" are trademarks of their respective owner and are used here only to describe compatibility. It talks to the same cloud the mobile app uses via a reverse-engineered protocol, which may break at any time and may be against the vendor's Terms of Service. Use at your own risk.
+> **Unofficial project.** Pellet Pilot is an independent, community-built tool. It is **not affiliated with, endorsed by, or sponsored by Traeger Inc.** "Traeger" and "WiFIRE" are trademarks of their respective owner and are used here only to describe compatibility. It talks to the same cloud the mobile app uses via a reverse-engineered protocol, which may break at any time and may be against the vendor's Terms of Service. Use at your own risk. It is also deliberately **read-only** — it never starts, stops, or changes your grill's temperature.
+
+```bash
+git clone https://github.com/ctopherwilliams/pellet-pilot.git && cd pellet-pilot
+python3 -m venv venv && ./venv/bin/pip install -e .   # adds the `pellet` command
+pellet watch --preset brisket --speak --coach          # after setting up credentials, below
+```
 
 ---
 
@@ -26,10 +32,29 @@ The mobile app shows you a number. Pellet Pilot gives you the **curve** — and 
 
 - **📈 Live probe trend line** — rate of rise in °/min, with a sparkline of the climb.
 - **⏱ Time-to-target ETA** — "your probe hits 203° at ~4:45 PM," updated every reading.
-- **🔔 Temperature alarms** — desktop notification + spoken alert when the probe crosses your thresholds.
-- **🗒 Your own cook history** — every reading logged to CSV, because the cloud keeps none. Query and re-plot past cooks any time.
 - **🧠 Stall detection** — flags the classic 150–170° brisket/pork-shoulder plateau so you don't panic (or wrap early).
+- **🎙 A coach, not just a number** — rule-based advice on whether to hold for bark or wrap, and natural spoken updates that say what actually changed since last time.
+- **🔔 Temperature alarms** — desktop notification + spoken alert when the probe crosses your thresholds, by name ("the pork butt," not "probe 1").
+- **🗒 Your own cook history** — every reading logged to CSV, because the cloud keeps none. Query, re-plot, or export a shareable report of any past cook.
 - **🖥 Terminal-native** — no app, no dashboard server. Pipe it, grep it, graph it.
+
+### vs. the official app
+
+|                              | Traeger app        | Pellet Pilot |
+|------------------------------|:-------------------:|:------------:|
+| Start / stop / set temp      | ✅                  | ❌ *(read-only, by design)* |
+| Live grill & probe temps     | ✅                  | ✅ |
+| Rate-of-rise + time-to-target ETA | ❌            | ✅ |
+| Stall detection              | ❌                  | ✅ |
+| Wrap/hold coaching           | ❌                  | ✅ rule-based |
+| Natural spoken updates       | ❌                  | ✅ opt-in, name-your-probes |
+| Cook history                 | ❌ *(not stored server-side)* | ✅ every reading, forever, locally |
+| Shareable cook report        | ❌                  | ✅ self-contained HTML |
+| Grafana / Prometheus export  | ❌                  | ✅ |
+| Runs where                   | phone app           | terminal, any OS, or chat via Claude Code |
+| Official support             | ✅                  | ❌ unofficial, community-built |
+
+Pellet Pilot doesn't replace the app — it's for the parts the app was never built for: predicting, coaching, logging, and sharing. Keep the app for actually starting your cook.
 
 ---
 
@@ -437,17 +462,17 @@ auto-merged; requires an `ANTHROPIC_API_KEY` repo secret. See [SECURITY.md](SECU
 ## 🗺 Roadmap
 
 Pellet Pilot already covers the full loop end to end: multi-probe live tracking,
-stage-aware predictions with spoken updates, local + remote alarms, cook
-history, charts with projected finish times, and Grafana export. Here's where
-it can go next:
+stage-aware predictions with spoken updates and rule-based wrap coaching, named
+probes, local + remote alarms, cook history, charts with projected finish
+times, a shareable Cook Report, a unified CLI with presets, and Grafana
+export. Here's where it can go next:
 
-- [ ] **Stage presets** (`--preset brisket`, `pork-shoulder`, `chicken`, ...) — skip typing `--stage` every cook
 - [ ] **`history.py compare A B`** — overlay two past cooks on one chart ("is this brisket tracking like my last one?")
-- [ ] **Shareable post-cook report** — one-page chart + stage times + stats card, for exporting or sharing a finished cook
+- [ ] **Publish to PyPI** — `pellet` already works via `pip install -e .`; a real release would drop the "clone + venv" step for non-developers
 - [ ] **Interactive Cognito MFA/challenge support at login** — refresh-token renewal is handled, but accounts with MFA enabled still can't complete the *initial* login
 - [ ] **Per-grill filtering** (`--grill <thingName>`) in `trend`/`history`/`plot`/`export` — logging already tags every row by grill, but the analysis tools don't yet let you select one when an account has more than one Traeger
-- [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick, mention only rate-of-change, or add quiet hours
-- [ ] **Packaged install** (`pipx install` or a single-file build) — lower the barrier below "clone + venv" for non-developers
+- [ ] **Voice-update pacing** — `--speak` announces every tick by design; a future option to summarize every Nth tick or add quiet hours
+- [ ] **Wrap Coach using grill temp too** — advice is currently probe-only; factoring in grill temp/lid-open drops could catch more (e.g. a temp swing from a lid check, not a real stall break)
 
 Have an idea? Open an issue — with the `autofix` label, this repo can draft its own fix.
 
