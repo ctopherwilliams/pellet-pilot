@@ -1,0 +1,6 @@
+name: Brisket
+stage_specs:
+  - "165:wrap"
+  - "203:done"
+name_specs:
+  - "brisket"

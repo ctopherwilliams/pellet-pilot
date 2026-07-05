@@ -26,9 +26,11 @@ import alarms  # noqa: E402
 import export  # noqa: E402
 import forecast as fc_mod  # noqa: E402
 import history  # noqa: E402
+import pellet  # noqa: E402
 import plan  # noqa: E402
 import plot  # noqa: E402
 import poll  # noqa: E402,F401
+import presets  # noqa: E402
 import probe_names  # noqa: E402
 import traeger_client as tc  # noqa: E402
 import trend  # noqa: E402,F401
@@ -800,6 +802,89 @@ def test_check_alarms_uses_probe_name():
         assert fired[0].startswith("The pork butt reached"), fired[0]
     finally:
         poll.notify, poll.notify_remote = orig_notify, orig_remote
+
+
+def test_presets_load_known():
+    for name in ("brisket", "pork-butt", "ribs", "chicken"):
+        p = presets.load_preset(name)
+        assert p["stage_specs"], (name, p)
+        assert p["name_specs"], (name, p)
+
+
+def test_presets_list_includes_shipped_files():
+    names = presets.list_presets()
+    for expected in ("brisket", "pork-butt", "ribs", "chicken"):
+        assert expected in names, names
+
+
+def test_presets_rejects_path_traversal_and_unknown():
+    for bad in ("../etc/passwd", "..", ".", "a/b"):
+        try:
+            presets.load_preset(bad)
+            assert False, f"expected ValueError for {bad!r}"
+        except ValueError:
+            pass
+    try:
+        presets.load_preset("no-such-preset")
+        assert False, "expected ValueError for an unknown preset"
+    except ValueError as e:
+        assert "Unknown preset" in str(e), e
+
+
+def test_presets_size_cap():
+    path = "/tmp/whatever.yaml"
+    try:
+        with open(path, "w") as f:
+            f.write("x: " + "y" * (presets._MAX_PRESET_FILE_BYTES + 1))
+        try:
+            presets.load_preset("whatever", presets_dir="/tmp")
+            assert False, "expected ValueError for an oversized preset file"
+        except ValueError as e:
+            assert "refusing to parse" in str(e), e
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_pellet_cli_preset_expands_to_stage_and_name_flags():
+    # --preset must expand to the exact --stage/--probe-name spec strings
+    # plan.py/probe_names.py already parse -- no separate preset schema to
+    # keep in sync with the real thing.
+    captured = {}
+    orig_main = poll.main
+    poll.main = lambda: captured.setdefault("argv", list(sys.argv))
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["pellet", "watch", "--preset", "brisket", "--speak"]
+        pellet.main()
+        argv = captured["argv"]
+        assert "--stage" in argv and "165:wrap" in argv, argv
+        assert "--stage" in argv and "203:done" in argv, argv
+        assert "--probe-name" in argv and "brisket" in argv, argv
+        assert "--speak" in argv, argv
+        assert "--watch" in argv, argv  # `pellet watch` implies continuous watch by default
+    finally:
+        poll.main = orig_main
+        sys.argv = orig_argv
+
+
+def test_pellet_cli_dispatches_to_each_subcommand():
+    orig_argv = sys.argv
+    calls = []
+    originals = {}
+    for mod, name in ((history, "history"), (trend, "trend"), (plot, "plot"), (export, "export")):
+        originals[name] = mod.main
+        mod.main = (lambda n: lambda: calls.append(n))(name)
+    try:
+        for cmd, name in (("history", "history"), ("trend", "trend"),
+                          ("chart", "plot"), ("export", "export")):
+            sys.argv = ["pellet", cmd]
+            pellet.main()
+        assert calls == ["history", "trend", "plot", "export"], calls
+    finally:
+        history.main, trend.main, plot.main, export.main = (
+            originals["history"], originals["trend"], originals["plot"], originals["export"])
+        sys.argv = orig_argv
 
 
 def test_backoff_seconds():

@@ -13,6 +13,7 @@ Pellet Pilot handles credentials for your Traeger grill account. This document d
 | Local machine | AppleScript injection via alarm text | User-influenced strings stripped of control characters (incl. newlines) and escaped before `osascript` |
 | Network path | MITM on MQTT WSS | TLS verification **on by default**; `TRAEGER_INSECURE_TLS=1` only as last resort |
 | Grill identifier (`thingName`, from the Traeger API) | Path/MQTT-topic injection if the upstream API ever returned an unexpected value | Validated against an alphanumeric pattern before use in any URL path or MQTT topic |
+| Local config files (`.probe_names.json`, `presets/*.yaml`) | Oversized/malformed file handed to `json.load`/`yaml.safe_load` | Size-capped before parsing; YAML loaded with `safe_load` only (never `yaml.load`); `--preset` names are checked against path separators/`.`/`..` before being joined into a file path |
 
 **Blast radius:** This tool is **read-only** against the grill — it polls status and sends command `90` (force status publish). It does **not** expose start/stop/set-temp. A stolen token cannot remotely ignite or change targets through this client.
 
