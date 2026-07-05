@@ -239,6 +239,11 @@ class Traeger:
 def parse_status(thing_name, doc):
     """Flatten a thing document into a simple reading dict."""
     st = doc.get("status", {})
+    # "usage" is a sibling of "status" in the raw doc, not nested inside it.
+    # error_stats are cumulative lifetime counters (not a live flag), so a
+    # caller must diff against the previous reading to detect a NEW error --
+    # see poll.py's check_error_counters().
+    error_stats = doc.get("usage", {}).get("error_stats", {})
     reading = {
         "thing": thing_name,
         "grill": st.get("grill"),          # current grill temp
@@ -247,6 +252,10 @@ def parse_status(thing_name, doc):
         "system_status": st.get("system_status"),
         "connected": st.get("connected"),
         "units": "C" if st.get("units") == 0 else "F",
+        "pellet_level": st.get("pellet_level"),        # 0-100, hopper sensor (if the grill has one)
+        "error_overheat": error_stats.get("overheat"),
+        "error_lowtemp": error_stats.get("lowtemp"),
+        "error_bad_thermocouple": error_stats.get("bad_thermocouple"),
         "probes": [],
     }
     for acc in st.get("acc", []):

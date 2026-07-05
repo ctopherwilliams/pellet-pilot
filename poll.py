@@ -48,7 +48,8 @@ def _backoff_seconds(interval, consecutive_failures):
 LOG = os.path.join(os.path.dirname(__file__), "cook_log.csv")
 
 MAX_PROBES = 4  # widen the log to support multiple meat probes
-_BASE_FIELDS = ["ts", "thing", "grill", "set", "ambient", "system_status"]
+_BASE_FIELDS = ["ts", "thing", "grill", "set", "ambient", "system_status",
+                "pellet_level", "error_overheat", "error_lowtemp", "error_bad_thermocouple"]
 FIELDS = _BASE_FIELDS + [
     f"probe{i}_{suffix}"
     for i in range(1, MAX_PROBES + 1)
@@ -435,6 +436,10 @@ def row_from(reading):
         "set": reading["set"],
         "ambient": reading["ambient"],
         "system_status": reading["system_status"],
+        "pellet_level": reading.get("pellet_level"),
+        "error_overheat": reading.get("error_overheat"),
+        "error_lowtemp": reading.get("error_lowtemp"),
+        "error_bad_thermocouple": reading.get("error_bad_thermocouple"),
     }
     probes = reading["probes"]
     for i in range(1, MAX_PROBES + 1):
@@ -444,6 +449,31 @@ def row_from(reading):
         row[f"probe{i}_connected"] = p.get("connected")
         row[f"probe{i}_alarm"] = p.get("alarm_fired")
     return row
+
+
+def migrate_log_schema(path=LOG):
+    """One-time migration for a cook_log.csv written before pellet_level/
+    error_* columns existed: rewrite it with the current FIELDS header so
+    old and new rows stay aligned (csv.DictReader matches columns by name
+    against the header, so appending new-schema rows under an old header
+    would silently misalign every field after it). No-op if the file
+    doesn't exist yet or its header already matches. New columns on
+    preserved old rows are left blank -- that data was never recorded.
+    """
+    if not os.path.exists(path):
+        return
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == FIELDS:
+            return
+        rows = list(reader)
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in FIELDS})
+    os.replace(tmp, path)
 
 
 def append(row):
@@ -555,6 +585,98 @@ def check_alarms(row, alarms, names=None):
                 print(f"  🔔 ALARM: probe {probe} crossed {int(thr)}°F")
 
 
+# ---- pellet + grill anomaly alerts -------------------------------------
+_LOW_PELLET_PCT = 20.0     # percent -- fire once when the hopper drops to/below this
+_PELLET_REARM_PCT = 30.0   # percent -- must climb back above this (a refill) to re-arm
+_pellet_alarm_fired = False
+
+
+def check_pellet_alarm(row):
+    """Fire once when the pellet hopper sensor reads at/below _LOW_PELLET_PCT.
+    Re-arms after a refill brings the level back above _PELLET_REARM_PCT (a
+    hysteresis gap), so a later re-drop alerts again instead of staying
+    permanently silenced for the rest of the log. No-op on grills without a
+    pellet sensor (the field is simply absent/blank).
+    """
+    global _pellet_alarm_fired
+    level = row.get("pellet_level")
+    if level in (None, "", "None"):
+        return
+    level = float(level)
+    if not _pellet_alarm_fired and level <= _LOW_PELLET_PCT:
+        _pellet_alarm_fired = True
+        msg = f"Pellet hopper low: {level:.0f}% — top it off soon"
+        notify("Traeger pellets", msg)
+        notify_remote("Traeger pellets", msg)
+        print(f"  🔔 PELLETS: {level:.0f}% remaining")
+    elif _pellet_alarm_fired and level >= _PELLET_REARM_PCT:
+        _pellet_alarm_fired = False
+
+
+_GRILL_DEVIATION_F = 40.0   # degrees below set point that counts as "off track"
+_GRILL_SUSTAINED_MIN = 10.0  # minutes the deviation must persist before alerting
+_ACTIVE_COOK_STATES = {"Manual cook", "Custom cook", "Running"}
+_grill_low_since = None
+_grill_anomaly_fired = False
+
+
+def check_temp_anomaly(row, state):
+    """Fire once if the grill temp has been sustained well below its set
+    point during an active cook -- the signature of a flame-out, pellet
+    jam, or auger failure, not a normal momentary lid-open dip (which
+    recovers within a minute or two, well under the sustained window).
+    Re-arms automatically once the grill recovers or the cook ends.
+    """
+    global _grill_low_since, _grill_anomaly_fired
+    grill, set_t = row.get("grill"), row.get("set")
+    if state not in _ACTIVE_COOK_STATES or grill in (None, "", "None") or set_t in (None, "", "None", 0, "0"):
+        _grill_low_since, _grill_anomaly_fired = None, False
+        return
+    grill, set_t = float(grill), float(set_t)
+    if set_t - grill < _GRILL_DEVIATION_F:
+        _grill_low_since, _grill_anomaly_fired = None, False
+        return
+    now = dt.datetime.fromisoformat(row["ts"])
+    if _grill_low_since is None:
+        _grill_low_since = now
+    elapsed = (now - _grill_low_since).total_seconds() / 60
+    if elapsed >= _GRILL_SUSTAINED_MIN and not _grill_anomaly_fired:
+        _grill_anomaly_fired = True
+        msg = (f"Grill at {int(grill)}° vs a {int(set_t)}° set point for "
+               f"{elapsed:.0f}+ min — check for a flame-out or pellet jam")
+        notify("Traeger anomaly", msg)
+        notify_remote("Traeger anomaly", msg)
+        print(f"  🔔 ANOMALY: grill {int(grill)}° vs set {int(set_t)}° for {elapsed:.0f} min")
+
+
+# Firmware-reported lifetime error counters -- only the temperature-relevant
+# ones. These are CUMULATIVE counts, not live flags, so only an INCREASE
+# since the last poll this run is a new event; the baseline on the very
+# first reading is intentionally not alerted on (it may reflect some
+# unrelated event from long before this run started).
+_TEMP_ERROR_FIELDS = {
+    "error_overheat": "overheat",
+    "error_lowtemp": "low temp",
+    "error_bad_thermocouple": "bad thermocouple",
+}
+_error_counter_baseline = {}
+
+
+def check_error_counters(row):
+    for field, label in _TEMP_ERROR_FIELDS.items():
+        val = row.get(field)
+        if val in (None, "", "None"):
+            continue
+        val = int(float(val))
+        prev = _error_counter_baseline.get(field)
+        _error_counter_baseline[field] = val
+        if prev is not None and val > prev:
+            msg = f"Grill reported a new {label} error (count now {val})"
+            notify("Traeger anomaly", msg)
+            notify_remote("Traeger anomaly", msg)
+            print(f"  🔔 ANOMALY: {label} error, count now {val}")
+
+
 def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=None, chart_probe=1,
              names=None, coach=False):
     alarms = alarms or {}
@@ -603,6 +725,11 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
                       if row.get(f"probe{i}_connected") and row.get(f"probe{i}_set")}
         if active:
             check_alarms(row, active, names)
+        # Always on (no flag needed) -- same spirit as the auto-armed probe
+        # alarms above: these are safety-relevant, not an opt-in convenience.
+        check_pellet_alarm(row)
+        check_temp_anomaly(row, state)
+        check_error_counters(row)
 
 
 def resolve_password(user):
@@ -655,6 +782,7 @@ def reauth(t, user):
 
 def main():
     load_env()
+    migrate_log_schema()  # one-time upgrade of an older cook_log.csv header, if needed
     user = os.environ.get("TRAEGER_USERNAME")
     if not user:
         sys.exit("Missing TRAEGER_USERNAME. Set it in .env.")

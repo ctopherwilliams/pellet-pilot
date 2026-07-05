@@ -9,6 +9,7 @@ runtime. No network required (SSRF checks use IP literals; auth flows use
 mocked HTTP responses).
 """
 import contextlib
+import csv
 import datetime as dt
 import io
 import json
@@ -69,6 +70,20 @@ def test_parse_status():
     assert r["probes"][0]["get_temp"] == 150 and r["probes"][0]["set_temp"] == 203, r
 
 
+def test_parse_status_includes_pellet_and_temp_errors():
+    doc = _doc()
+    doc["status"]["pellet_level"] = 35
+    doc["usage"] = {"error_stats": {"overheat": 2, "lowtemp": 0, "bad_thermocouple": 1}}
+    r = tc.parse_status("g", doc)
+    assert r["pellet_level"] == 35, r
+    assert r["error_overheat"] == 2 and r["error_bad_thermocouple"] == 1, r
+
+    # a grill with no "usage" block at all (or an older firmware without
+    # error_stats) must not crash -- just come back as None
+    r2 = tc.parse_status("g", _doc())
+    assert r2["pellet_level"] is None and r2["error_overheat"] is None, r2
+
+
 def test_mqtt_client_builds():
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport="websockets")
     c.tls_set_context(tc._mqtt_tls_context("example.com"))
@@ -82,7 +97,7 @@ def test_status_decode():
 
 def test_row_from_multiprobe():
     row = poll.row_from(tc.parse_status("g", _doc(temps=((150, 203), (120, 165)))))
-    assert len(poll.FIELDS) == 6 + 4 * 4, poll.FIELDS
+    assert len(poll.FIELDS) == len(poll._BASE_FIELDS) + 4 * 4, poll.FIELDS
     assert row["probe1_temp"] == 150 and row["probe2_temp"] == 120, row
     assert row["probe3_temp"] is None, row
 
@@ -1006,6 +1021,126 @@ def test_print_coach_smoke():
         poll.print_coach(row, {}, {1: "pork butt"})
     out = buf.getvalue()
     assert "pork butt" in out, out
+
+
+def test_check_pellet_alarm_fires_once_and_rearms():
+    poll._pellet_alarm_fired = False
+    fired = []
+    orig, poll.notify = poll.notify, lambda t, m: fired.append(m)
+    orig_r, poll.notify_remote = poll.notify_remote, lambda t, m: None
+    try:
+        poll.check_pellet_alarm({"pellet_level": 25})   # above threshold -- no alert
+        assert not fired, fired
+        poll.check_pellet_alarm({"pellet_level": 20})   # at threshold -- fires
+        poll.check_pellet_alarm({"pellet_level": 15})   # still low -- no repeat
+        assert len(fired) == 1, fired
+        poll.check_pellet_alarm({"pellet_level": 25})   # refilled, but below re-arm point yet
+        poll.check_pellet_alarm({"pellet_level": 10})   # drop again -- must NOT re-fire yet
+        assert len(fired) == 1, fired
+        poll.check_pellet_alarm({"pellet_level": 30})   # refilled past the re-arm point
+        poll.check_pellet_alarm({"pellet_level": 15})   # drops again -- fires again
+        assert len(fired) == 2, fired
+        # a grill with no pellet sensor (field absent) must never crash or alert
+        poll.check_pellet_alarm({})
+        assert len(fired) == 2, fired
+    finally:
+        poll.notify, poll.notify_remote = orig, orig_r
+
+
+def test_check_temp_anomaly_requires_sustained_deviation():
+    poll._grill_low_since = None
+    poll._grill_anomaly_fired = False
+    fired = []
+    orig, poll.notify = poll.notify, lambda t, m: fired.append(m)
+    orig_r, poll.notify_remote = poll.notify_remote, lambda t, m: None
+    t0 = dt.datetime(2026, 7, 4, 12, 0, 0)
+    try:
+        # deviation just starting -- must not fire immediately
+        poll.check_temp_anomaly({"ts": t0.isoformat(), "grill": 200, "set": 275}, "Manual cook")
+        assert not fired, fired
+        # 5 min later, still deviated -- still under the sustained window
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=5)).isoformat(), "grill": 200, "set": 275}, "Manual cook")
+        assert not fired, fired
+        # 12 min in -- past the sustained window, fires
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=12)).isoformat(), "grill": 200, "set": 275}, "Manual cook")
+        assert len(fired) == 1, fired
+        # recovers -- resets, a later fresh long deviation can fire again
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=14)).isoformat(), "grill": 270, "set": 275}, "Manual cook")
+        assert poll._grill_low_since is None, "should reset once the grill recovers"
+        # a normal momentary dip that recovers quickly must never fire at all
+        poll._grill_low_since, poll._grill_anomaly_fired = None, False
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=20)).isoformat(), "grill": 200, "set": 275}, "Manual cook")
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=21)).isoformat(), "grill": 270, "set": 275}, "Manual cook")
+        assert len(fired) == 1, fired  # unchanged -- the brief dip never sustained past 10 min
+        # not actively cooking (e.g. Idle) -- never fires even if "deviated"
+        poll._grill_low_since, poll._grill_anomaly_fired = None, False
+        poll.check_temp_anomaly({"ts": t0.isoformat(), "grill": 70, "set": 275}, "Idle")
+        poll.check_temp_anomaly(
+            {"ts": (t0 + dt.timedelta(minutes=20)).isoformat(), "grill": 70, "set": 275}, "Idle")
+        assert len(fired) == 1, fired
+    finally:
+        poll.notify, poll.notify_remote = orig, orig_r
+
+
+def test_check_error_counters_fires_on_increment_only():
+    poll._error_counter_baseline.clear()
+    fired = []
+    orig, poll.notify = poll.notify, lambda t, m: fired.append(m)
+    orig_r, poll.notify_remote = poll.notify_remote, lambda t, m: None
+    try:
+        # first-ever reading establishes the baseline -- must NOT alert on it,
+        # even if the lifetime count is already nonzero from long before this run
+        poll.check_error_counters({"error_overheat": 3, "error_lowtemp": 0, "error_bad_thermocouple": 0})
+        assert not fired, fired
+        # unchanged -- no alert
+        poll.check_error_counters({"error_overheat": 3, "error_lowtemp": 0, "error_bad_thermocouple": 0})
+        assert not fired, fired
+        # a NEW overheat event during this run -- alerts
+        poll.check_error_counters({"error_overheat": 4, "error_lowtemp": 0, "error_bad_thermocouple": 0})
+        assert len(fired) == 1 and "overheat" in fired[0], fired
+        # a NEW bad-thermocouple event -- alerts too
+        poll.check_error_counters({"error_overheat": 4, "error_lowtemp": 0, "error_bad_thermocouple": 1})
+        assert len(fired) == 2 and "thermocouple" in fired[1], fired
+    finally:
+        poll.notify, poll.notify_remote = orig, orig_r
+
+
+def test_migrate_log_schema_preserves_old_rows_and_adds_new_columns():
+    path = "/tmp/.pellet_pilot_test_migrate.csv"
+    old_fields = ["ts", "thing", "grill", "set", "ambient", "system_status"] + [
+        f"probe{i}_{suffix}" for i in range(1, poll.MAX_PROBES + 1)
+        for suffix in ("temp", "set", "connected", "alarm")]
+    try:
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=old_fields)
+            w.writeheader()
+            w.writerow({k: "" for k in old_fields} | {
+                "ts": "2026-07-04T12:00:00", "thing": "g", "grill": "250", "set": "250",
+                "ambient": "70", "system_status": "6", "probe1_temp": "160"})
+
+        poll.migrate_log_schema(path)
+
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            assert reader.fieldnames == poll.FIELDS, reader.fieldnames
+            rows = list(reader)
+        assert len(rows) == 1, rows
+        assert rows[0]["grill"] == "250" and rows[0]["probe1_temp"] == "160", rows[0]
+        assert rows[0]["pellet_level"] == "", rows[0]  # new column, blank for old data
+
+        # already-current schema -- no-op, and no data loss on a second call
+        poll.migrate_log_schema(path)
+        with open(path, newline="") as f:
+            rows2 = list(csv.DictReader(f))
+        assert rows2 == rows, (rows2, rows)
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def test_backoff_seconds():

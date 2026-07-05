@@ -35,6 +35,7 @@ The mobile app shows you a number. Pellet Pilot gives you the **curve** — and 
 - **🧠 Stall detection** — flags the classic 150–170° brisket/pork-shoulder plateau so you don't panic (or wrap early).
 - **🎙 A coach, not just a number** — rule-based advice on whether to hold for bark or wrap, and natural spoken updates that say what actually changed since last time.
 - **🔔 Temperature alarms** — desktop notification + spoken alert when the probe crosses your thresholds, by name ("the pork butt," not "probe 1").
+- **⚠️ Pellet + anomaly alerts** — always-on warnings for a low hopper and for the flame-out/pellet-jam/firmware-error signatures the app's number alone won't tell you about.
 - **🗒 Your own cook history** — every reading logged to CSV, because the cloud keeps none. Query, re-plot, or export a shareable report of any past cook.
 - **🖥 Terminal-native** — no app, no dashboard server. Pipe it, grep it, graph it.
 
@@ -47,6 +48,7 @@ The mobile app shows you a number. Pellet Pilot gives you the **curve** — and 
 | Rate-of-rise + time-to-target ETA | ❌            | ✅ |
 | Stall detection              | ❌                  | ✅ |
 | Wrap/hold coaching           | ❌                  | ✅ rule-based |
+| Low-pellet / flame-out alerts | ❌                 | ✅ always on |
 | Natural spoken updates       | ❌                  | ✅ opt-in, name-your-probes |
 | Cook history                 | ❌ *(not stored server-side)* | ✅ every reading, forever, locally |
 | Shareable cook report        | ❌                  | ✅ self-contained HTML |
@@ -439,7 +441,21 @@ The grill cloud does **not** expose past temperatures — the in-app graph is dr
 The Cook Report embeds its chart inline and never includes the grill's device
 identifier, so it's safe to send to someone or post — unlike the raw `cook_log.csv`.
 
+**Pellet + anomaly alerts** are always on during `--watch` (no flag needed — these
+are safety-relevant, not an opt-in convenience):
 
+- **Low pellets** — alerts once when the hopper sensor drops to 20%, and re-arms
+  after a refill so a later re-drop alerts again.
+- **Flame-out / pellet jam** — alerts if the grill temp has been sustained 40°+
+  below its set point for 10+ minutes during an active cook (a normal lid-open dip
+  recovers well under that).
+- **Firmware error codes** — alerts on a *new* overheat, low-temp, or bad-thermocouple
+  event reported by the controller itself (not on whatever count already existed
+  before this run started).
+
+An older `cook_log.csv` is upgraded automatically and losslessly the first time you
+run the updated `poll.py` — existing rows are preserved, the new columns just come
+back blank for readings taken before they existed.
 
 **Remote alarms** (in addition to the local macOS notification) — set any of these
 env vars and probe-crossing alerts are delivered there too:
