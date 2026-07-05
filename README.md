@@ -299,6 +299,30 @@ It escalates ("🔴 urgent") past ~90 minutes in a single continuous stall, and 
 the difference between "still stalled, not wrapped yet" and "wrapped and *still*
 stalled" (the latter suggests bumping the grill temp instead of wrapping again).
 
+### Cook notes — log the cut, weight, and how it turned out
+
+Sensors only know temperature. Attach the details that don't come off a probe —
+the cut, its weight, and (since logging sometimes starts after the meat actually
+went on) a corrected start time:
+
+```bash
+./venv/bin/python history.py note 2 --cut "pork butt" --weight 8.5 \
+    --on-grill "8:15 AM" --verdict "amazing" --notes "hot and fast, 276 avg pit temp"
+```
+
+`history.py show <id>` and the Cook Report both pick these up automatically —
+weight and cut in the header, your verdict front and center, and the total
+duration measured from your corrected `--on-grill` time instead of whichever
+tick logging happened to start on. Persisted to a gitignored `.cook_notes.json`.
+
+This also fixed a real bug: stage-crossing times ("wrap reached...", "done
+reached...") used to report the first single reading past the threshold, which
+a brief probe-reinsertion spike (pulling the probe out to wrap, then putting it
+back in — it reads grill-ambient air for a few ticks before settling into the
+meat) could trigger hours before the meat actually got there. Both `history.py`
+and the Cook Report now use the same spike-cleaned series the chart already
+relies on, so the reported crossing is the real one.
+
 ---
 
 ## 🔐 Credentials

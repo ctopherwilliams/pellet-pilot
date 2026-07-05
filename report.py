@@ -8,13 +8,15 @@ Usage:
   report.py                     # latest cook -> cook_report.html
   report.py --cook 2 --out r.html
 """
+import datetime as dt
 import html as _html
 import sys
 
+import cook_notes
 import plan
 import probe_names
 from forecast import _FLAT, STALL_HI, STALL_LO
-from history import _num, load_rows, sessions, summarize
+from history import _num, load_rows, session_key, sessions, stage_hits, summarize
 from plot import render_svg
 
 _STAGE_ROW_STYLE = "color:#8a7d70;font-style:italic;font-size:12px"
@@ -43,16 +45,6 @@ def _stall_minutes(sess, probe):
     return total
 
 
-def _stage_hits(sess, probe, stages):
-    """[(label, temp, datetime|None)] -- when each stage was first reached."""
-    hits = []
-    for stemp, label in stages.get(probe, []):
-        hit = next((r["_ts"] for r in sess
-                    if (_num(r.get(f"probe{probe}_temp")) or -1) >= stemp), None)
-        hits.append((label, stemp, hit))
-    return hits
-
-
 def build_report(sess, stages=None, names=None, title="Pellet Pilot cook report"):
     """Self-contained HTML string -- no external assets, safe to share.
 
@@ -63,6 +55,7 @@ def build_report(sess, stages=None, names=None, title="Pellet Pilot cook report"
     stages = stages or {}
     names = names or {}
     s = summarize(sess)
+    note = cook_notes.get_note(session_key(sess)) or {}
     svg = render_svg(sess)  # whole-cook overview: grill + every probe
 
     rows = []
@@ -78,14 +71,41 @@ def build_report(sess, stages=None, names=None, title="Pellet Pilot cook report"
             f'<td>{int(p["start"])}°</td><td>{int(p["peak"])}°</td><td>{int(p["final"])}°</td>'
             f"<td>{tgt}</td><td>{stall:.0f} min</td></tr>"
         )
-        for lbl, stemp, hit in _stage_hits(sess, i, stages):
+        for lbl, stemp, hit in stage_hits(sess, i, stages):
             when = hit.strftime("%-I:%M %p") if hit else "not reached"
             rows.append(
                 f'<tr style="{_STAGE_ROW_STYLE}"><td colspan="5">{label} — '
                 f"{_html.escape(lbl)} ({int(stemp)}°)</td><td>{when}</td></tr>"
             )
 
-    hrs = s["duration_min"] / 60
+    # --on-grill (see cook_notes.py) corrects the start time when sensor
+    # logging began after the meat actually went on -- use it for the
+    # headline duration when given, but keep showing the logged span too.
+    on_grill = note.get("on_grill")
+    if on_grill:
+        on_grill_dt = dt.datetime.fromisoformat(on_grill)
+        hrs = (s["end"] - on_grill_dt).total_seconds() / 3600
+        started_at = on_grill_dt
+    else:
+        hrs = s["duration_min"] / 60
+        started_at = s["start"]
+
+    cut_bits = []
+    if note.get("cut"):
+        cut_bits.append(_html.escape(str(note["cut"])))
+    if note.get("weight_lb"):
+        cut_bits.append(f"{note['weight_lb']:g} lb")
+    cut_line = f" &middot; {' &middot; '.join(cut_bits)}" if cut_bits else ""
+
+    verdict_html = ""
+    if note.get("verdict") or note.get("notes"):
+        parts = []
+        if note.get("verdict"):
+            parts.append(f"<b>{_html.escape(str(note['verdict']))}</b>")
+        if note.get("notes"):
+            parts.append(_html.escape(str(note["notes"])))
+        verdict_html = (f'<p style="color:#d8cbbf;font-size:15px">{" &mdash; ".join(parts)}</p>')
+
     esc_title = _html.escape(title)
     return f"""<!doctype html>
 <meta charset="utf-8">
@@ -93,11 +113,12 @@ def build_report(sess, stages=None, names=None, title="Pellet Pilot cook report"
 <body style="margin:0;background:#0d0b09;color:#d8cbbf;font-family:ui-sans-serif,Helvetica,Arial,sans-serif;
              display:flex;justify-content:center;padding:24px 12px">
 <div style="max-width:960px;width:100%">
-  <h1 style="font-weight:600;margin-bottom:4px">{esc_title}</h1>
+  <h1 style="font-weight:600;margin-bottom:4px">{esc_title}{cut_line}</h1>
   <p style="color:#8a7d70;margin-top:0">
-    {s['start']:%A, %B} {s['start'].day} &middot; started {s['start']:%-I:%M %p} &middot;
+    {started_at:%A, %B} {started_at.day} &middot; started {started_at:%-I:%M %p} &middot;
     {hrs:.1f}h cook &middot; grill peak {int(s['max_grill'] or 0)}&deg;
   </p>
+  {verdict_html}
   <div>{svg}</div>
   <table style="width:100%;border-collapse:collapse;margin-top:16px;font-size:14px">
     <tr style="color:#8a7d70;text-align:left">

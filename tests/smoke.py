@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paho.mqtt.client as mqtt  # noqa: E402
 
 import alarms  # noqa: E402
+import cook_notes  # noqa: E402
 import export  # noqa: E402
 import forecast as fc_mod  # noqa: E402
 import history  # noqa: E402
@@ -124,6 +125,108 @@ def test_history_sessions():
     assert len(groups) == 2, len(groups)
     s = history.summarize(groups[0])
     assert 1 in s["probes"] and 2 in s["probes"], s["probes"]
+
+
+def test_history_session_key_stable_and_unique():
+    a = _rows(dt.datetime(2026, 7, 3, 8, 0), 5)
+    b = _rows(dt.datetime(2026, 7, 4, 8, 0), 5)
+    assert history.session_key(a) == history.session_key(a)  # stable
+    assert history.session_key(a) != history.session_key(b)  # unique per cook
+
+
+def test_stage_hits_ignores_probe_reinsertion_spike():
+    # Real-world bug this guards against: pulling the probe to wrap it, then
+    # reinserting, makes it briefly read grill-ambient air (a spike well
+    # above the true meat temp) before settling back down. A naive "first
+    # reading >= threshold" check reports the stage reached the moment that
+    # transient spike crosses it -- hours before the meat actually got there.
+    t0 = dt.datetime(2026, 7, 4, 14, 0)
+    # climbs to 165 (wrap), spikes to 231 (probe-out artifact), settles back
+    # to 165-170 (post-wrap reality), then genuinely climbs to 205 much later.
+    temps = [160, 165, 192, 219, 226, 231, 213, 170, 167, 165, 165, 165] + \
+        [165 + i for i in range(1, 41)]  # slow real climb: 166 -> 205 over 40 ticks
+    rows = []
+    for i, temp in enumerate(temps):
+        t = t0 + dt.timedelta(minutes=i)
+        rows.append({"ts": t.isoformat(), "_ts": t, "thing": "g", "grill": "270", "set": "275",
+                     "ambient": "100", "system_status": "6",
+                     "probe1_temp": str(temp), "probe1_set": "205",
+                     "probe1_connected": "True", "probe1_alarm": "0"})
+    stages = {1: [(165.0, "wrap"), (205.0, "done")]}
+    hits = history.stage_hits(rows, 1, stages)
+    wrap_hit = next(h for lbl, _, h in hits if lbl == "wrap")
+    done_hit = next(h for lbl, _, h in hits if lbl == "done")
+    # wrap genuinely was reached early (160->165 is a real climb, not a spike)
+    assert wrap_hit == t0 + dt.timedelta(minutes=1), wrap_hit
+    # done must NOT be the momentary spike at minute 3-5 -- it's the real,
+    # sustained crossing much later in the slow climb back up to 205.
+    assert done_hit is not None and done_hit >= t0 + dt.timedelta(minutes=40), done_hit
+
+
+def test_cook_notes_save_load_merge_and_size_cap():
+    path = "/tmp/.pellet_pilot_test_cook_notes.json"
+    try:
+        cook_notes.save_note("2026-07-04T11:13:09", path=path, cut="pork butt", weight_lb=8.5)
+        note = cook_notes.get_note("2026-07-04T11:13:09", path=path)
+        assert note == {"cut": "pork butt", "weight_lb": 8.5}, note
+
+        # a later call merges in new fields without clobbering existing ones
+        cook_notes.save_note("2026-07-04T11:13:09", path=path, verdict="amazing")
+        note = cook_notes.get_note("2026-07-04T11:13:09", path=path)
+        assert note["cut"] == "pork butt" and note["verdict"] == "amazing", note
+
+        # unknown fields are ignored rather than silently stored
+        cook_notes.save_note("2026-07-04T11:13:09", path=path, bogus_field="nope")
+        note = cook_notes.get_note("2026-07-04T11:13:09", path=path)
+        assert "bogus_field" not in note, note
+
+        # size cap
+        with open(path, "w") as f:
+            f.write('{"x": "' + "y" * cook_notes._MAX_NOTES_FILE_BYTES + '"}')
+        try:
+            cook_notes.load_notes(path)
+            assert False, "expected ValueError for an oversized notes file"
+        except ValueError:
+            pass
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_history_note_cli_and_show_display():
+    path = "/tmp/.pellet_pilot_test_cook_notes_cli.json"
+    orig_notes_file = cook_notes.NOTES_FILE
+    cook_notes.NOTES_FILE = path
+    try:
+        rows = _rows(dt.datetime(2026, 7, 4, 8, 15), 10, p1=160, p1_set=205)
+        groups = [rows]
+        history.cmd_note(groups, 1, ["--cut", "pork butt", "--weight", "8.5",
+                                      "--on-grill", "8:15 AM", "--verdict", "amazing"])
+        note = cook_notes.get_note(history.session_key(rows), path=path)
+        assert note["cut"] == "pork butt" and note["weight_lb"] == 8.5, note
+        assert note["on_grill"].startswith("2026-07-04T08:15"), note
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            history.cmd_show(groups, 1)
+        out = buf.getvalue()
+        assert "pork butt" in out and "8.5 lb" in out, out
+        assert "amazing" in out, out
+    finally:
+        cook_notes.NOTES_FILE = orig_notes_file
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_parse_time_of_day_accepts_common_formats():
+    d = dt.date(2026, 7, 4)
+    assert history._parse_time_of_day("8:15 AM", d) == dt.datetime(2026, 7, 4, 8, 15)
+    assert history._parse_time_of_day("08:15", d) == dt.datetime(2026, 7, 4, 8, 15)
+    try:
+        history._parse_time_of_day("not a time", d)
+        assert False, "expected ValueError for an unparseable time"
+    except ValueError:
+        pass
 
 
 def test_plot_svg():
@@ -932,6 +1035,28 @@ def test_report_shows_stage_crossing_times():
     html = report.build_report(sess, stages={1: [(165.0, "wrap"), (203.0, "done")]})
     assert "wrap (165°)" in html, html
     assert "not reached" in html  # 203 ("done") never reached in this short synthetic climb
+
+
+def test_report_includes_manual_note_and_on_grill_override():
+    path = "/tmp/.pellet_pilot_test_report_notes.json"
+    orig_notes_file = cook_notes.NOTES_FILE
+    cook_notes.NOTES_FILE = path
+    try:
+        sess = _rows(dt.datetime(2026, 7, 4, 11, 0), 12, p1=160, p1_set=203)
+        key = history.session_key(sess)
+        # on-grill 3 hours before logging started -- the headline duration
+        # must reflect that, not just the logged span.
+        cook_notes.save_note(key, cut="pork butt", weight_lb=8.5,
+                              on_grill="2026-07-04T08:00:00", verdict="amazing")
+        html = report.build_report(sess, stages={})
+        assert "pork butt" in html and "8.5 lb" in html, html
+        assert "amazing" in html, html
+        # 08:00 -> 09:22 (last reading, 11:00 + 11*2min) = 3h22m = 3.4h
+        assert "3.4h cook" in html, html
+    finally:
+        cook_notes.NOTES_FILE = orig_notes_file
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def test_stall_minutes():
