@@ -1,0 +1,80 @@
+RED TEAM REVIEW — pellet-pilot (Round 4)
+Source of truth (ALWAYS pull from here): https://github.com/ctopherwilliams/pellet-pilot
+
+You are a staff-level security engineer with Traeger WiFIRE / AWS IoT expertise. Perform an in-depth red team review focused on minimizing attack surface and validating fixes.
+
+SETUP (execute yourself — do not tell the user what to run):
+  git clone https://github.com/ctopherwilliams/pellet-pilot.git && cd pellet-pilot
+  git fetch origin && git checkout main && git pull origin main
+  git log --oneline -3
+  # Also check open branches — security fixes may be on fix/rt1-rt8-security (PR #7) not yet merged:
+  git fetch origin fix/rt1-rt8-security && git log origin/main..origin/fix/rt1-rt8-security --oneline
+
+  python3 -m venv venv && ./venv/bin/pip install -r requirements.txt pip-audit bandit
+  ./venv/bin/python tests/smoke.py
+  ./venv/bin/pip-audit -r requirements.txt
+  ./venv/bin/bandit -c bandit.yaml -r . -ll
+
+ARCHITECTURE (read-only grill client — verify this holds):
+  Local CLI → Cognito USER_PASSWORD_AUTH → REST (mobile-iot-api.iot.traegergrills.io) → MQTT WSS
+  ONLY grill command allowed: {"command": "90"} (status refresh). NO start/stop/set-temp anywhere.
+
+KEY FILES:
+  traeger_client.py   — Cognito auth, refresh token (if merged), MQTT TLS, thingName validation
+  poll.py             — credentials, --watch loop, reauth/backoff, AppleScript alarms, cook stages
+  alarms.py           — Pushover/ntfy/webhook egress, SSRF guard, DNS pin (if merged)
+  plan.py             — .cook_plan.json persistence
+  export.py           — Grafana export; --serve binds 127.0.0.1 only
+  tests/smoke.py      — CI regression (should be 18 tests if PR #7 merged, 9 on older main)
+  .github/workflows/security.yml
+  .github/workflows/issue-autopilot.yml
+  .github/workflows/dependabot-auto-merge.yml
+  SECURITY.md
+
+REVIEW CHECKLIST:
+  [ ] Confirm read-only grill design — grep for command codes beyond "90"
+  [ ] TLS secure-by-default; TRAEGER_INSECURE_TLS=1 is opt-out only
+  [ ] --watch long-cook re-auth: RefreshToken flow works; password cleared after login does NOT break renewal
+  [ ] AppleScript: control chars + newlines neutralized before osascript (stage labels from --stage / .cook_plan.json)
+  [ ] alarms.py SSRF: HTTPS-only, no redirects, private-IP block, DNS pinned at connect time (not just check time)
+  [ ] Cognito backoff on persistent re-auth failure (not hammering every interval)
+  [ ] TRAEGER_PASSWORD popped from os.environ after read
+  [ ] Bitwarden session via BW_SESSION env, not --session argv
+  [ ] thingName validated before URL/MQTT use
+  [ ] Issue autopilot: label-gated, PR-only, never auto-merged
+  [ ] Dependabot auto-merge policy (majors auto-merge = supply-chain risk — document if still open)
+  [ ] SECURITY.md matches actual behavior (especially re-auth claims)
+
+KNOWN HISTORY (verify fixed or still open — do not assume):
+  RT-1 P0: --watch re-auth broken when password cleared — fixed in PR #7 via RefreshToken + reauth()
+  RT-2 P1: AppleScript newline injection — fixed in PR #7
+  RT-3 P1: Webhook DNS TOCTOU — fixed in PR #7 via _pin_dns()
+  RT-4 P1: No Cognito backoff — fixed in PR #7
+  RT-5 P2: Dependabot auto-merge majors — intentional policy, may still be open
+  RT-6 P3: thingName validation — fixed in PR #7
+  RT-7 P2: Password in os.environ — fixed in PR #7
+  RT-8 P3: Bitwarden --session in argv — fixed in PR #7
+
+NEW ITEMS TO CHECK (may still be open post-PR #7):
+  RT-NEW-1: Stage labels flow to remote webhooks unsanitized (data injection, not SSRF)
+  RT-NEW-2: plan.load_plan() unbounded json.load (local DoS)
+  RT-NEW-3: MQTT topic prefix not verified before parsing
+  RT-NEW-4: export.py --serve localhost no auth (acceptable? document)
+  RT-NEW-5: Broad except Exception in watch loop masks failure types
+
+DELIVERABLE:
+  1. State which commit/branch you reviewed (main vs PR #7)
+  2. Executive summary (2-3 sentences) + overall grade (A-F)
+  3. Findings table: Severity | ID | Finding | File:Line | Status (open/fixed) | Fix
+  4. Attack scenario matrix (stolen token, SSRF, local RCE, long cook, supply chain)
+  5. Risk scorecard before/after
+  6. Prioritized P0-P3 actions
+  7. Merge recommendation if PR #7 still open
+
+CONSTRAINTS:
+  - Always pull from https://github.com/ctopherwilliams/pellet-pilot — no other source
+  - Execute all commands yourself
+  - Cite code as startLine:endLine:filepath
+  - Preserve read-only grill design in any fix suggestions
+  - Minimal focused diffs only — no drive-by refactors
+  - Distinguish main (production) vs open PR branches

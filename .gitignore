@@ -22,3 +22,6 @@ __pycache__/
 .cook_plan.json
 .probe_names.json
 .cook_notes.json
+
+# piolium audit artifacts
+piolium/
