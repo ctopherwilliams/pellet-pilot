@@ -421,10 +421,14 @@ def bitwarden_password(item):
         return None  # bw CLI not installed
     if out.returncode == 0 and out.stdout.strip():
         return out.stdout.strip()
-    # surface a useful hint (locked vault, wrong item, stale session)
-    msg = (out.stderr or out.stdout).strip()
-    if msg:
-        print(f"  Bitwarden: {msg}")
+    # stdout of `bw get password` is the secret itself, and stderr can echo
+    # it too. Never write either stream to the terminal -- a fixed hint covers
+    # the usual causes (locked vault, wrong item, stale session).
+    if (out.stderr or "").strip() or out.returncode not in (0, None):
+        print(
+            "  Bitwarden: could not read the vault item "
+            "(locked vault, unknown item, or stale session)."
+        )
     return None
 
 
@@ -732,6 +736,22 @@ def one_shot(t, alarms=None, stages=None, speak_every_tick=False, chart_path=Non
         check_error_counters(row)
 
 
+def log_auth_backend(tag):
+    """Print which credential backend was used. Never prints the secret.
+
+    `tag` is the short label from resolve_password ("env", "bitwarden",
+    "keychain") -- not the password. Only those known tags produce output,
+    and each branch prints a fixed phrase, so a password or token passed
+    here by mistake is dropped instead of written to stdout.
+    """
+    if tag == "env":
+        print("(using credentials from environment variable)")
+    elif tag == "bitwarden":
+        print("(using credentials from Bitwarden)")
+    elif tag == "keychain":
+        print("(using credentials from macOS Keychain)")
+
+
 def resolve_password(user):
     """Resolve the Traeger password: env override, then Bitwarden, then Keychain.
 
@@ -795,8 +815,11 @@ def main():
             f'  - Keychain:  security add-generic-password -a "{user}" -s {KEYCHAIN_SERVICE} -w\n'
             "  - or set TRAEGER_PASSWORD in .env"
         )
+    # Do not interpolate `src` (or `pw`) into stdout. `src` is only a backend
+    # tag, but it is returned in the same tuple as the password, and printing
+    # it is clear-text logging of that sensitive return value.
     if os.environ.get("PELLET_PILOT_VERBOSE"):
-        print(f"(password from {src})")
+        log_auth_backend(src)
 
     t = Traeger(user, pw)
     t.login()

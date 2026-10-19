@@ -663,6 +663,63 @@ def test_applescript_escape_control_chars():
     assert '\\"' in safe and "\\\\" in safe, safe
 
 
+def test_verbose_backend_line_never_prints_secret():
+    # CodeQL py/clear-text-logging-sensitive-data: the verbose line used to
+    # interpolate the tag returned beside the password. It must print a fixed
+    # backend phrase only, and must drop anything that is not one of the
+    # three known tags (including the password itself).
+    secret = "s3cr3t-value"
+    os.environ["TRAEGER_PASSWORD"] = secret
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            pw, src = poll.resolve_password("someuser")
+            poll.log_auth_backend(src)
+            poll.log_auth_backend("bitwarden")
+            poll.log_auth_backend("keychain")
+            poll.log_auth_backend(pw)
+            poll.log_auth_backend(secret)
+            poll.log_auth_backend(None)
+            poll.log_auth_backend("env; " + secret)
+        assert pw == secret and src == "env", (pw, src)
+        assert "TRAEGER_PASSWORD" not in os.environ
+        out = buf.getvalue()
+        assert secret not in out, out
+        assert "(using credentials from environment variable)" in out, out
+        assert "(using credentials from Bitwarden)" in out, out
+        assert "(using credentials from macOS Keychain)" in out, out
+        assert out.count("using credentials from") == 3, out
+    finally:
+        os.environ.pop("TRAEGER_PASSWORD", None)
+
+
+def test_bitwarden_failure_does_not_print_secret():
+    # `bw get password` writes the secret to stdout. A failed read must not
+    # echo stdout or stderr, even when the CLI repeats the secret there.
+    secret = "vault-secret-value"
+
+    def fake_run(argv, capture_output=None, text=None, env=None):
+        class _R:
+            returncode = 1
+            stdout = secret + "\n"
+            stderr = "error: " + secret
+        return _R()
+
+    orig_run, orig_bw = poll.subprocess.run, poll._bw_session
+    poll.subprocess.run = fake_run
+    poll._bw_session = lambda: "SESSIONKEY"
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            pw = poll.bitwarden_password("item-id")
+        assert pw is None
+        out = buf.getvalue()
+        assert secret not in out, out
+        assert "could not read the vault item" in out, out
+    finally:
+        poll.subprocess.run, poll._bw_session = orig_run, orig_bw
+
+
 def test_password_env_popped():
     # RT-7: TRAEGER_PASSWORD must not linger in os.environ (inherited by every
     # child subprocess) once it's been read.
