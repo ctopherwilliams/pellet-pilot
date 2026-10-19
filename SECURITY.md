@@ -73,7 +73,7 @@ The first source that yields a value wins. The program never prompts for or echo
 - If using `.env`: `chmod 600 .env` (owner read/write only).
 - Keep `.bw_session` mode `600`; it grants vault access until locked.
 - Do not set `TRAEGER_INSECURE_TLS=1` unless TLS verification blocks connectivity on your network.
-- Set `PELLET_PILOT_VERBOSE=1` only when debugging credential source — never in shared logs.
+- `PELLET_PILOT_VERBOSE=1` prints a fixed backend name only (environment variable, Bitwarden, or macOS Keychain). It never prints the password, a token, or Bitwarden CLI output. Still keep it out of shared logs.
 
 ## Known limitations
 
